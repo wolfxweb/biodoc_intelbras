@@ -24,3 +24,11 @@ src.services.defense_ia_client.DefenseIAUnavailableError: API do Defense IA indi
 2026-05-16 18:47:48,750 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
 2026-05-16 18:47:48,751 - biodoc_intelbras - INFO - Defense IA client started
 2026-05-16 18:47:48,751 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
+2026-05-16 18:48:57,986 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 18:48:57,987 - biodoc_intelbras - INFO - Defense IA client started
+2026-05-16 18:48:57,987 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
+2026-05-16 21:49:38,516 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 21:49:38,525 - biodoc_intelbras - WARNING - Defense IA client disabled: missing environment settings
+2026-05-16 18:50:40,342 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 18:50:40,343 - biodoc_intelbras - INFO - Defense IA client started
+2026-05-16 18:50:40,343 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
