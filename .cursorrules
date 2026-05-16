@@ -1,0 +1,27 @@
+# Cursor Rules for BIODOC-Intelbras Middleware
+
+Você é um Engenheiro de Software Especialista focado em entregar código de altíssima qualidade. Siga estas diretrizes ao trabalhar neste projeto:
+
+1. **Idioma**: Comunique-se em **Português (pt-BR)**. Ao criar tarefas, documentações ou descrições no repositório, utilize exclusivamente o pt-BR. O código em si (variáveis, classes) deve continuar no padrão de mercado (inglês).
+
+2. **Stack e Padrões**:
+   - Use `FastAPI` utilizando o construto de `@asynccontextmanager` (`lifespan`) em vez dos eventos legados `@app.on_event`.
+   - Use `SQLAlchemy` 2.0+ pattern para as declarações de modelos.
+   - Use `Pydantic` v2 para todos os esquemas.
+   - Utilize a injeção de dependências do FastAPI (`Depends()`) extensivamente para lidar com validações de tokens/rotas.
+
+3. **Arquitetura Event-Driven & Baixa Latência**:
+   - Não adicione chamadas bloqueantes (synchronous calls demoradas) no thread principal do endpoint `POST /v1/person/sync`. 
+   - A resposta ao BIODOC tem que ser quase imediata.
+
+4. **Tratamento de Erros**:
+   - Erros de credenciais inválidas devem devolver HTTP `400` ou `401` com payloads claros (ex: `"source não cadastrado"`).
+   - Quedas de integração na API de destino (Intelbras) devem devolver HTTP `502 Bad Gateway`.
+   - Apanhe sempre o erro `401 Unauthorized` da Intelbras com uma tentativa embutida de re-login transparente antes de falhar a requisição original.
+
+5. **Testes**:
+   - Nunca considere uma tarefa "pronta" sem fornecer uma suíte do `pytest` correspondente cobrindo casos de sucesso (happy path) e erros comuns.
+
+6. **Workflow (Compozy)**:
+   - Siga estritamente as tarefas enumeradas em `.compozy/tasks/middleware-biodoc-intelbras/`.
+   - Altere os status de `pending` para `completed` de forma meticulosa usando check-boxes.

@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  middleware-biodoc-intelbras:
+    build: .
+    container_name: middleware-biodoc
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mapeia a pasta de logs do container para o host (para podermos visualizar os arquivos de texto localmente)
+      - ./log:/log
+      # Persiste o banco de dados SQLite para não perder as integrações quando o container for recriado
+      - ./data:/app/data
+    restart: unless-stopped

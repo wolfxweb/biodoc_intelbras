@@ -1,0 +1,26 @@
+2026-05-16 18:37:23,668 - biodoc_intelbras - INFO - Defense IA sync succeeded source=biodoc external_id=123
+2026-05-16 18:37:23,713 - biodoc_intelbras - ERROR - Defense IA sync failed source=biodoc external_id=123 error=API do Defense IA indisponível
+Traceback (most recent call last):
+  File "/home/rebeca/Documentos/carlos/biodoc_intelbras/src/api/routes/sync.py", line 24, in sync_person
+    await defense_client.sync_person(payload)
+  File "/usr/lib/python3.13/unittest/mock.py", line 2321, in _execute_mock_call
+    raise effect
+src.services.defense_ia_client.DefenseIAUnavailableError: API do Defense IA indisponível
+2026-05-16 18:38:06,930 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 18:38:06,930 - biodoc_intelbras - INFO - Defense IA client started
+2026-05-16 18:38:06,930 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
+2026-05-16 18:38:39,624 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 18:38:39,624 - biodoc_intelbras - INFO - Defense IA client started
+2026-05-16 18:38:39,624 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
+2026-05-16 18:38:51,635 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 18:38:51,636 - biodoc_intelbras - INFO - Defense IA client started
+2026-05-16 18:38:51,636 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
+2026-05-16 18:39:15,227 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 18:39:15,227 - biodoc_intelbras - INFO - Defense IA client started
+2026-05-16 18:39:15,227 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
+2026-05-16 18:42:11,019 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 18:42:11,020 - biodoc_intelbras - INFO - Defense IA client started
+2026-05-16 18:42:11,020 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
+2026-05-16 18:47:48,750 - biodoc_intelbras - INFO - Starting BIODOC-Intelbras Middleware API
+2026-05-16 18:47:48,751 - biodoc_intelbras - INFO - Defense IA client started
+2026-05-16 18:47:48,751 - biodoc_intelbras - INFO - Stopping BIODOC-Intelbras Middleware API
