@@ -10,6 +10,6 @@ app = FastAPI(title="BIODOC-Intelbras Middleware", lifespan=lifespan)
 app.include_router(sync_router)
 app.include_router(sources_router)
 
-@app.get("/health")
+@app.get("/health", include_in_schema=False)
 async def health_check():
     return {"status": "ok"}
