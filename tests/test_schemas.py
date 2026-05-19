@@ -33,3 +33,28 @@ def test_sync_request_rejects_missing_person():
 
     with pytest.raises(ValidationError):
         SyncRequest.model_validate(invalid_payload)
+
+
+def test_sync_request_rejects_external_id_with_special_chars():
+    invalid_payload = VALID_PAYLOAD | {"external_id": "biodoc-test-001"}
+
+    with pytest.raises(ValidationError):
+        SyncRequest.model_validate(invalid_payload)
+
+
+def test_sync_request_accepts_payload_without_biometrics():
+    payload = VALID_PAYLOAD.copy()
+    payload.pop("biometrics")
+
+    model = SyncRequest.model_validate(payload)
+
+    assert model.biometrics is None
+
+
+def test_sync_request_accepts_empty_face():
+    payload = VALID_PAYLOAD | {"biometrics": {"face_image_base64": None}}
+
+    model = SyncRequest.model_validate(payload)
+
+    assert model.biometrics is not None
+    assert model.biometrics.face_image_base64 is None

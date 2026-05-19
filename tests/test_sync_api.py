@@ -14,6 +14,10 @@ VALID_SYNC_PAYLOAD = {
     "operation": "upsert",
     "external_id": "123",
     "person": {"full_name": "Maria Silva", "document": "12345678900"},
+}
+
+VALID_SYNC_PAYLOAD_WITH_FACE = {
+    **VALID_SYNC_PAYLOAD,
     "biometrics": {"face_image_base64": "base64-image"},
 }
 
@@ -31,6 +35,22 @@ def create_source(db_session: Session, token: str = "integration-token") -> None
 
 def integration_headers(token: str = "integration-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.asyncio
+async def test_sync_person_returns_401_when_authorization_missing(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+):
+    create_source(db_session)
+
+    response = await api_client.post(
+        "/v1/person/sync",
+        json=VALID_SYNC_PAYLOAD,
+    )
+
+    assert response.status_code == 401
+    assert "Authorization ausente" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -82,6 +102,54 @@ async def test_sync_person_rejects_invalid_token(
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Token ou source inválido"}
+
+
+@pytest.mark.asyncio
+async def test_sync_person_with_optional_face(api_client: httpx.AsyncClient, db_session: Session):
+    create_source(db_session)
+
+    response = await api_client.post(
+        "/v1/person/sync",
+        json=VALID_SYNC_PAYLOAD_WITH_FACE,
+        headers=integration_headers(),
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_sync_person_accepts_admin_api_token(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+):
+    create_source(db_session, token="different-source-token")
+
+    response = await api_client.post(
+        "/v1/person/sync",
+        json=VALID_SYNC_PAYLOAD,
+        headers=integration_headers("admin-token"),
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_sync_person_returns_503_when_defense_not_ready(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+    defense_client_mock: AsyncMock,
+):
+    create_source(db_session)
+    defense_client_mock.is_ready = False
+
+    response = await api_client.post(
+        "/v1/person/sync",
+        json=VALID_SYNC_PAYLOAD,
+        headers=integration_headers(),
+    )
+
+    assert response.status_code == 503
+    assert "Defense IA não conectado" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
