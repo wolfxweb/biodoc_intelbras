@@ -1,1 +1,48 @@
 log/
+data/
+
+# Variáveis de ambiente
+.env
+!.env.example
+
+# Pastas e arquivos ocultos (iniciados com ponto)
+.*
+!.gitignore
+!.env.example
+
+# Python bytecode e cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+
+# Build e distribuição
+dist/
+build/
+*.egg-info/
+
+# SDK e documentação binária da Intelbras (grandes e não-versionáveis)
+docs/Defense IA*/
+docs/_extracted/
+docs/defense_ia.zip
+
+# Arquivos binários / compactados
+*.zip
+*.tar.gz
+*.rar
+*.dll
+*.exe
+*.lib
+*.so
+*.dylib
+
+# Sistema operacional
+Thumbs.db
+Desktop.ini
+.DS_Store

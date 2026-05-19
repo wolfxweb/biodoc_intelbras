@@ -1,4 +1,7 @@
 import os
+
+os.environ["SKIP_DOTENV"] = "1"
+
 from collections.abc import Generator
 from unittest.mock import AsyncMock
 
@@ -36,8 +39,18 @@ def db_session() -> Generator[Session, None, None]:
 
 @pytest.fixture()
 def defense_client_mock() -> AsyncMock:
+    from src.services.defense_ia_client import DefenseIASettings
+
     client = AsyncMock()
     client.sync_person.return_value = {"ok": True}
+    client.settings = DefenseIASettings(
+        server_url="http://defense.test",
+        username="u",
+        password="p",
+        api_mode="brms",
+    )
+    client.token = "mock-token"
+    client.is_ready = True
     return client
 
 

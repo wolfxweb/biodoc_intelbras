@@ -14,4 +14,9 @@ async def test_health_check():
         response = await client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert "defense_ia" in body
+    assert "enabled" in body["defense_ia"]
+    assert "connected" in body["defense_ia"]
+    assert "api_mode" in body["defense_ia"]

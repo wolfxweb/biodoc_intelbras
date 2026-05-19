@@ -3,8 +3,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from src.core.bootstrap import ensure_integration_source
-from src.core.database import SessionLocal
 from src.core.logging import logger
 from src.services.defense_ia_client import (
     DefenseIAClient,
@@ -39,12 +37,6 @@ def build_defense_client_from_env() -> DefenseIAClient:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting BIODOC-Intelbras Middleware API")
-
-    db = SessionLocal()
-    try:
-        ensure_integration_source(db)
-    finally:
-        db.close()
 
     app.state.defense_client = build_defense_client_from_env()
     if app.state.defense_client.settings.enabled:

@@ -1,0 +1,32 @@
+# Defense IA — conexão API 3.x
+
+Documentação: `docs/Defense IA - API/API Defense IA 3.0/HTTP API For Defense IA 3.1_EN for Intelbras.pdf`
+
+## IP (padrão no .env)
+- WAN: http://200.180.74.90
+- VPN (comentados): http://192.168.100.250 , http://192.168.40.2
+
+## Login BRMS (middleware)
+1. `DEFENSE_IA_API_MODE=brms` e `DEFENSE_IA_CLIENT_TYPE=WINPC_V2`
+2. Chave RSA: `python scripts/generate_defense_rsa_keys.py` → colar `DEFENSE_IA_PUBLIC_KEY` no `.env`
+   - Ou teste: `DEFENSE_IA_USE_SERVER_PUBLICKEY=true`
+3. Teste login: `python scripts/test_defense_login.py`
+4. Teste cadastro/atualizacao (upsert): `python scripts/test_defense_sync_person.py`
+
+Usuário/senha no `.env` são da **API** (ex.: `system` em minúsculas), não do app Windows Defense.
+
+## URLs
+- Middleware (BIODOC chama aqui): http://localhost:8000/v1/person/sync
+- Defense IA (middleware conecta): http://200.180.74.90 (DEFENSE_IA_SERVER_URL)
+- Health: GET http://localhost:8000/health → `defense_ia.connected`
+
+## Produção BIODOC
+- Bearer unico: `ADMIN_API_TOKEN` (admin e POST /v1/person/sync)
+- Opcional: `BIODOC_INTEGRATION_KEY` separada em producao
+- `DEFAULT_INTEGRATION_SOURCE_NAME=biodoc`
+- Sync sem `biometrics` em atualização: mantém foto no Defense
+
+## Foto de teste
+python scripts/download_test_face.py
+python scripts/test_sync_via_api.py
+python scripts/test_sync_via_api.py biodocapi001 --no-face

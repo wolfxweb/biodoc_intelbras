@@ -46,6 +46,10 @@ class DefenseIANotReadyError(DefenseIAError):
     """Defense habilitado no .env mas sem sessão (login falhou ou ainda não executado)."""
 
 
+class DefenseIAArgumentError(DefenseIAError):
+    """Argumento inválido enviado ao Defense IA (ex: imagem facial ilegível, código 8044)."""
+
+
 @dataclass(frozen=True)
 class DefenseIASettings:
     server_url: str
@@ -203,26 +207,49 @@ class DefenseIAClient:
                     payload,
                     existing_face_pictures=preserve_faces,
                 )
-                return await self._request(
-                    "PUT",
-                    brms_person_path(person_id),
-                    json=person_payload,
-                    headers=headers,
+                url = brms_person_path(person_id)
+                logger.debug(
+                    "[DEFENSE_IA OUT] method=PUT url=%s payload=%s",
+                    url,
+                    self._sanitize_payload_for_log(person_payload),
                 )
+                response = await self._request("PUT", url, json=person_payload, headers=headers)
+                logger.debug(
+                    "[DEFENSE_IA IN] method=PUT url=%s status=%d body=%s",
+                    url,
+                    response.status_code,
+                    response.text[:500],
+                )
+                return response
             person_payload = self.build_person_payload(payload)
-            return await self._request(
-                "POST",
+            logger.debug(
+                "[DEFENSE_IA OUT] method=POST url=%s payload=%s",
                 BRMS_PERSON,
-                json=person_payload,
-                headers=headers,
+                self._sanitize_payload_for_log(person_payload),
             )
+            response = await self._request("POST", BRMS_PERSON, json=person_payload, headers=headers)
+            logger.debug(
+                "[DEFENSE_IA IN] method=POST url=%s status=%d body=%s",
+                BRMS_PERSON,
+                response.status_code,
+                response.text[:500],
+            )
+            return response
         person_payload = self.build_person_payload(payload)
-        return await self._request(
-            "PUT",
-            f"/OBMS/accessControl/person/{payload.external_id}",
-            json=person_payload,
-            headers=headers,
+        url = f"/OBMS/accessControl/person/{payload.external_id}"
+        logger.debug(
+            "[DEFENSE_IA OUT] method=PUT url=%s payload=%s",
+            url,
+            self._sanitize_payload_for_log(person_payload),
         )
+        response = await self._request("PUT", url, json=person_payload, headers=headers)
+        logger.debug(
+            "[DEFENSE_IA IN] method=PUT url=%s status=%d body=%s",
+            url,
+            response.status_code,
+            response.text[:500],
+        )
+        return response
 
     async def _fetch_brms_person(self, person_id: str) -> dict[str, Any] | None:
         response = await self._request(
@@ -267,6 +294,20 @@ class DefenseIAClient:
         if raw is None:
             return ""
         return raw.strip()
+
+    @staticmethod
+    def _sanitize_payload_for_log(person_payload: dict[str, Any]) -> dict[str, Any]:
+        """Clona o payload substituindo imagens base64 por marcadores de tamanho."""
+        import copy
+        sanitized = copy.deepcopy(person_payload)
+        for section in (sanitized, sanitized.get("baseInfo", {})):
+            faces = section.get("facePictures")
+            if isinstance(faces, list):
+                section["facePictures"] = [
+                    f"<IMG:{len(f)}_chars>" if isinstance(f, str) and f else f
+                    for f in faces
+                ]
+        return sanitized
 
     def build_person_payload(
         self,
@@ -495,9 +536,10 @@ class DefenseIAClient:
                     extra = ""
                     if detail not in (None, "", {}):
                         extra = f" | data={detail}"
-                    raise DefenseIAError(
-                        f"Defense IA retornou código {code}: {desc}{extra}".strip()
-                    )
+                    msg = f"Defense IA retornou código {code}: {desc}{extra}".strip()
+                    if code in (8044, "8044"):
+                        raise DefenseIAArgumentError(msg)
+                    raise DefenseIAError(msg)
         if response.status_code == 401:
             raise DefenseIAUnauthorizedError("Token do Defense IA recusado")
         if response.status_code >= 500:

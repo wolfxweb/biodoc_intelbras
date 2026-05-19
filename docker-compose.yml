@@ -11,4 +11,6 @@ services:
       - ./log:/log
       # Persiste o banco de dados SQLite para não perder as integrações quando o container for recriado
       - ./data:/app/data
+    env_file:
+      - .env
     restart: unless-stopped
