@@ -8,7 +8,7 @@ from typing import Any, Literal
 import httpx
 
 from src.api.schemas import SyncRequest
-from src.core.logging import logger
+from src.core.logging import keep_alive_logger, logger
 from src.services.defense_ia_crypto import resolve_login_public_key
 
 API_MODE_BRMS = "brms"
@@ -149,8 +149,13 @@ class DefenseIAClient:
 
     async def keep_alive_once(self) -> None:
         if not self._token or not self._dollar_signature:
+            keep_alive_logger.info("[KEEP_ALIVE] token ausente, fazendo login")
             await self.login()
+            keep_alive_logger.info("[KEEP_ALIVE] login concluido")
             return
+
+        token_preview = self._token[:8] + "..." if self._token else "none"
+        keep_alive_logger.debug("[KEEP_ALIVE] ping enviado token=%s", token_preview)
 
         headers = self._auth_headers()
         if self.settings.is_brms:
@@ -170,9 +175,15 @@ class DefenseIAClient:
             )
 
         if response.status_code == 401:
+            keep_alive_logger.warning(
+                "[KEEP_ALIVE] token recusado (401), fazendo re-login"
+            )
             await self.login()
+            keep_alive_logger.info("[KEEP_ALIVE] re-login bem-sucedido, novo token obtido")
             return
+
         self._raise_for_response(response)
+        keep_alive_logger.debug("[KEEP_ALIVE] ok status=%d", response.status_code)
 
     async def sync_person(self, payload: SyncRequest) -> dict[str, Any]:
         if self.settings.enabled and not self._token:
@@ -497,9 +508,14 @@ class DefenseIAClient:
             try:
                 await self.keep_alive_once()
             except DefenseIAError:
+                keep_alive_logger.warning("[KEEP_ALIVE] falha no ping, tentando re-login")
                 try:
                     await self.login()
+                    keep_alive_logger.info("[KEEP_ALIVE] re-login bem-sucedido apos falha")
                 except DefenseIAError as exc:
+                    keep_alive_logger.warning(
+                        "[KEEP_ALIVE] re-login falhou: %s", exc
+                    )
                     logger.warning("Defense IA keep-alive re-login failed: %s", exc)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
