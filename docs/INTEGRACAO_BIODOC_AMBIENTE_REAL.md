@@ -141,7 +141,7 @@ Gere um `BIODOC_WEBHOOK_TOKEN` forte (ex.: 32+ caracteres aleatórios). Esse val
 ```bash
 cd biodoc_intelbras
 docker compose up -d --build
-curl -s http://localhost:8000/health | jq
+curl -s http://localhost:8000/status | jq
 ```
 
 **Docker Swarm (homologação Wolfx):**
@@ -150,15 +150,20 @@ curl -s http://localhost:8000/health | jq
 - Host Traefik: `homologa.wolfx.com.br` → porta 8000 do serviço
 - `env_file`: `/root/biodoc_intelbras/.env`
 
-Confirme no `/health`:
+Confirme no `/status`:
 
 ```json
 {
-  "status": "ok",
+  "middleware": "ok",
   "defense_ia": {
     "enabled": true,
     "connected": true,
     "api_mode": "brms"
+  },
+  "biodoc": {
+    "api_url": "https://api.sandbox.biodoc.com.br/api",
+    "configured": true,
+    "ambiente": "sandbox"
   }
 }
 ```
@@ -243,7 +248,7 @@ Se `status` for `false`, o middleware responde **422** e **não** envia ao Defen
 ## Checklist antes de ir para produção
 
 - [ ] `.env` com `BIODOC_API_URL` e tokens do ambiente correto (sandbox testado antes)
-- [ ] `GET /health` com Defense `connected: true`
+- [ ] `GET /status` com Defense `connected: true` e BioDoc `configured: true`
 - [ ] Webhook BioDoc apontando para URL **HTTPS** acessível da internet
 - [ ] `BIODOC_WEBHOOK_TOKEN` igual no `.env` e no painel BioDoc
 - [ ] Teste com um `card` real existente no BioDoc (sandbox)
@@ -307,7 +312,7 @@ PYTHONPATH=. python3 scripts/test_defense_login.py
 | 401 | Token webhook inválido ou ausente | Conferir `BIODOC_WEBHOOK_TOKEN` e header no BioDoc |
 | 422 | `success=false`, sem `card`, inativo no BioDoc, sem imagem, face rejeitada | Ver payload e cadastro no BioDoc |
 | 502 | API BioDoc inacessível, TOKEN_API inválido, ou erro do Defense | Ver logs e credenciais |
-| 503 | Defense não conectado no startup | Ver `/health`, rede e login Defense |
+| 503 | Defense não conectado no startup | Ver `/status`, rede e login Defense |
 
 Corpo de sucesso:
 
@@ -364,5 +369,5 @@ Corpo de sucesso:
 1. Obter **TOKEN_API** e cadastrar **webhook** no painel BioDoc produção.
 2. Definir `BIODOC_API_URL=https://api.biodoc.com.br/api` e tokens no `.env`.
 3. Publicar middleware em URL HTTPS de produção.
-4. Garantir Defense acessível e `connected: true` no `/health`.
+4. Garantir Defense acessível e `connected: true` no `/status`.
 5. Testar um cadastro real no sandbox; depois repetir em produção com um beneficiário piloto.

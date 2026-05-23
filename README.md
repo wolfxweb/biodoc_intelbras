@@ -53,7 +53,7 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 | `BIODOC_WEBHOOK_TOKEN` | Sim (webhook) | Token que o BioDoc envia no header `Authorization` do webhook. Deve corresponder ao valor configurado no painel BioDoc. |
 | `BIODOC_AMBIENTE` | Não | `sandbox` ou `production` — apenas para log/rastreabilidade. |
 
-Sem as variáveis do Defense IA, a API sobe com o client desabilitado. Isso permite testar `/health`, documentação OpenAPI e rotas que usam mocks em teste.
+Sem as variáveis do Defense IA, a API sobe com o client desabilitado. Isso permite testar `/status`, documentação OpenAPI e rotas que usam mocks em teste.
 
 ### Produção BIODOC (bootstrap da chave)
 
@@ -97,21 +97,26 @@ A API ficará disponível em:
 http://localhost:8000
 ```
 
-Healthcheck:
+Status das integrações:
 
 ```bash
-curl -i http://localhost:8000/health
+curl -i http://localhost:8000/status
 ```
 
 Resposta esperada (com Defense configurado e login OK):
 
 ```json
 {
-  "status": "ok",
+  "middleware": "ok",
   "defense_ia": {
     "enabled": true,
     "connected": true,
     "api_mode": "brms"
+  },
+  "biodoc": {
+    "api_url": "https://api.sandbox.biodoc.com.br/api",
+    "configured": true,
+    "ambiente": "sandbox"
   }
 }
 ```

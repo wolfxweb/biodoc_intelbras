@@ -18,7 +18,7 @@ Usuário/senha no `.env` são da **API** (ex.: `system` em minúsculas), não do
 ## URLs
 - Middleware (BIODOC chama aqui): http://localhost:8000/v1/person/sync
 - Defense IA (middleware conecta): http://200.180.74.90 (DEFENSE_IA_SERVER_URL)
-- Health: GET http://localhost:8000/health → `defense_ia.connected`
+- Status: GET http://localhost:8000/status → `defense_ia.connected`, `biodoc.configured`
 
 ## Produção BIODOC
 - Bearer unico: `ADMIN_API_TOKEN` (admin e POST /v1/person/sync)

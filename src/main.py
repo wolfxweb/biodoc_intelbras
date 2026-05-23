@@ -23,15 +23,29 @@ app.include_router(sync_router)
 app.include_router(webhook_router)
 
 
-@app.get("/health", tags=["health"])
-async def health_check(request: Request) -> dict:
-    client = request.app.state.defense_client
-    enabled = client.settings.enabled
+@app.get(
+    "/status",
+    tags=["status"],
+    summary="Status do middleware e integrações",
+    description=(
+        "Retorna se a API está no ar e o estado das integrações "
+        "(Intelbras Defense IA e cliente BioDoc configurado no startup)."
+    ),
+)
+async def integration_status(request: Request) -> dict:
+    defense = request.app.state.defense_client
+    defense_enabled = defense.settings.enabled
+    biodoc_configured = bool(os.getenv("BIODOC_TOKEN_API", "").strip())
     return {
-        "status": "ok",
+        "middleware": "ok",
         "defense_ia": {
-            "enabled": enabled,
-            "connected": client.is_ready if enabled else False,
-            "api_mode": client.settings.api_mode,
+            "enabled": defense_enabled,
+            "connected": defense.is_ready if defense_enabled else False,
+            "api_mode": defense.settings.api_mode,
+        },
+        "biodoc": {
+            "api_url": os.getenv("BIODOC_API_URL", ""),
+            "configured": biodoc_configured,
+            "ambiente": os.getenv("BIODOC_AMBIENTE", "sandbox"),
         },
     }

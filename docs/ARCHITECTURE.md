@@ -239,25 +239,30 @@ INFO  Defense IA sync succeeded source=biodoc external_id=Carlos01
 
 ---
 
-## 7. Saúde do Sistema (`src/main.py`)
+## 7. Status do middleware (`src/main.py`)
 
 ```
-GET /health
+GET /status
 ```
 
 Resposta:
 ```json
 {
-  "status": "ok",
+  "middleware": "ok",
   "defense_ia": {
     "enabled": true,
     "connected": true,
     "api_mode": "brms"
+  },
+  "biodoc": {
+    "api_url": "https://api.sandbox.biodoc.com.br/api",
+    "configured": true,
+    "ambiente": "sandbox"
   }
 }
 ```
 
-`connected: true` indica que o token está presente e o keep-alive está ativo.
+`defense_ia.connected: true` indica login no Defense e keep-alive ativos. `biodoc.configured` indica `BIODOC_TOKEN_API` definido no ambiente.
 
 ---
 
