@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from src.api.dependencies import get_defense_client
+from src.api.dependencies import get_biodoc_client, get_defense_client
 from src.core.database import Base, get_db
 from src.main import app
 
@@ -54,10 +54,16 @@ def defense_client_mock() -> AsyncMock:
     return client
 
 
+@pytest.fixture()
+def biodoc_client_mock() -> AsyncMock:
+    return AsyncMock()
+
+
 @pytest_asyncio.fixture()
 async def api_client(
     db_session: Session,
     defense_client_mock: AsyncMock,
+    biodoc_client_mock: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("ADMIN_API_TOKEN", "admin-token")
@@ -71,6 +77,12 @@ async def api_client(
         return defense_client_mock
 
     app.dependency_overrides[get_defense_client] = override_get_defense_client
+
+    async def override_get_biodoc_client() -> AsyncMock:
+        return biodoc_client_mock
+
+    app.dependency_overrides[get_biodoc_client] = override_get_biodoc_client
+
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,

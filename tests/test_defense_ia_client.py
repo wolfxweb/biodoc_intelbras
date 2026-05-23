@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -17,6 +18,9 @@ from src.services.defense_ia_client import (
 )
 
 
+_FAKE_JPEG_B64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 2048).decode()
+
+
 def sync_payload() -> SyncRequest:
     return SyncRequest.model_validate(
         {
@@ -24,7 +28,7 @@ def sync_payload() -> SyncRequest:
             "operation": "upsert",
             "external_id": "123",
             "person": {"full_name": "Maria Silva", "document": "12345678900"},
-            "biometrics": {"face_image_base64": "base64-image"},
+            "biometrics": {"face_image_base64": _FAKE_JPEG_B64},
         }
     )
 
@@ -272,7 +276,7 @@ def test_build_person_payload_maps_biodoc_fields():
 
     assert payload["baseInfo"]["personId"] == "123"
     assert payload["baseInfo"]["firstName"] == "Maria Silva"
-    assert payload["baseInfo"]["facePictures"] == ["base64-image"]
+    assert payload["baseInfo"]["facePictures"] == [_FAKE_JPEG_B64]
     assert payload["extensionInfo"]["idNo"] == "12345678900"
 
 

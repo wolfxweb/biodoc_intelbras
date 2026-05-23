@@ -16,9 +16,12 @@ VALID_SYNC_PAYLOAD = {
     "person": {"full_name": "Maria Silva", "document": "12345678900"},
 }
 
+import base64
+_FAKE_JPEG_B64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 2048).decode()
+
 VALID_SYNC_PAYLOAD_WITH_FACE = {
     **VALID_SYNC_PAYLOAD,
-    "biometrics": {"face_image_base64": "base64-image"},
+    "biometrics": {"face_image_base64": _FAKE_JPEG_B64},
 }
 
 
@@ -33,7 +36,7 @@ def create_source(db_session: Session, token: str = "integration-token") -> None
     db_session.commit()
 
 
-def integration_headers(token: str = "integration-token") -> dict[str, str]:
+def integration_headers(token: str = "admin-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -77,14 +80,15 @@ async def test_sync_person_success(
 
 @pytest.mark.asyncio
 async def test_sync_person_rejects_unknown_source(api_client: httpx.AsyncClient):
+    # source "desconhecido" é rejeitado pelo schema Pydantic com 422
+    invalid_payload = {**VALID_SYNC_PAYLOAD, "source": "desconhecido"}
     response = await api_client.post(
         "/v1/person/sync",
-        json=VALID_SYNC_PAYLOAD,
+        json=invalid_payload,
         headers=integration_headers(),
     )
 
-    assert response.status_code == 400
-    assert response.json() == {"detail": "source não cadastrado"}
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -101,7 +105,7 @@ async def test_sync_person_rejects_invalid_token(
     )
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "Token ou source inválido"}
+    assert "inválido" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

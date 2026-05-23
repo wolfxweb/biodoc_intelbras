@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from src.core.logging import logger
+from src.services.biodoc_client import BiodocClient
 from src.services.defense_ia_client import (
     DefenseIAClient,
     DefenseIASettings,
@@ -34,6 +35,14 @@ def build_defense_client_from_env() -> DefenseIAClient:
     return DefenseIAClient(settings=settings)
 
 
+def build_biodoc_client_from_env() -> BiodocClient:
+    return BiodocClient(
+        base_url=os.getenv("BIODOC_API_URL", "https://api.biodoc.com.br/api"),
+        token_api=os.getenv("BIODOC_TOKEN_API", ""),
+        timeout_seconds=float(os.getenv("DEFENSE_IA_TIMEOUT_SECONDS", "10")),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting BIODOC-Intelbras Middleware API")
@@ -47,8 +56,20 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.warning("Defense IA client disabled: missing environment settings")
+
+    app.state.biodoc_client = build_biodoc_client_from_env()
+    await app.state.biodoc_client.start()
+    biodoc_configured = bool(os.getenv("BIODOC_TOKEN_API"))
+    logger.info(
+        "BioDoc client started (api_url=%s, configured=%s, ambiente=%s)",
+        os.getenv("BIODOC_API_URL", ""),
+        biodoc_configured,
+        os.getenv("BIODOC_AMBIENTE", "sandbox"),
+    )
+
     try:
         yield
     finally:
+        await app.state.biodoc_client.close()
         await app.state.defense_client.close()
         logger.info("Stopping BIODOC-Intelbras Middleware API")

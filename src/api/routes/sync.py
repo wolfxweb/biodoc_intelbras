@@ -1,18 +1,12 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
 from src.api.dependencies import get_defense_client, require_admin_token
 from src.api.schemas import SyncRequest, SyncResponse
 from src.core.logging import logger
-from src.services.defense_ia_client import (
-    DefenseIAArgumentError,
-    DefenseIAClient,
-    DefenseIAError,
-    DefenseIANotReadyError,
-    DefenseIAUnavailableError,
-    defense_error_detail_public,
-)
+from src.services.defense_ia_client import DefenseIAClient
+from src.services.defense_sync import sync_to_defense
 
 router = APIRouter(
     prefix="/v1/person",
@@ -35,12 +29,6 @@ async def sync_person(
     payload: SyncRequest,
     defense_client: Annotated[DefenseIAClient, Depends(get_defense_client)],
 ) -> SyncResponse:
-    if defense_client.settings.enabled and not defense_client.is_ready:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Defense IA não conectado no startup",
-        )
-
     face_info = "none"
     if payload.biometrics and payload.biometrics.face_image_base64:
         face_info = f"<IMG:{len(payload.biometrics.face_image_base64)}_chars>"
@@ -53,46 +41,11 @@ async def sync_person(
         face_info,
     )
 
-    try:
-        await defense_client.sync_person(payload)
-    except DefenseIAArgumentError as exc:
-        logger.warning(
-            "Argumento inválido source=%s external_id=%s: %s",
-            payload.source,
-            payload.external_id,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Biometria inválida: imagem facial não reconhecida pelo Defense IA",
-        ) from exc
-    except DefenseIANotReadyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
-    except DefenseIAUnavailableError as exc:
-        logger.exception(
-            "Defense IA sync failed source=%s external_id=%s error=%s",
-            payload.source,
-            payload.external_id,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=defense_error_detail_public(exc),
-        ) from exc
-    except DefenseIAError as exc:
-        logger.exception(
-            "Defense IA sync failed source=%s external_id=%s error=%s",
-            payload.source,
-            payload.external_id,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=defense_error_detail_public(exc),
-        ) from exc
+    await sync_to_defense(
+        payload,
+        defense_client,
+        log_context=f"source={payload.source} external_id={payload.external_id}",
+    )
 
     logger.info(
         "Defense IA sync succeeded source=%s external_id=%s",

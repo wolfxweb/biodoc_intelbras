@@ -33,7 +33,7 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 
 | Variável | Obrigatória | Descrição |
 |---|---:|---|
-| `ADMIN_API_TOKEN` | Sim, para rotas administrativas | Token usado para criar, alterar, listar e desativar sources. |
+| `ADMIN_API_TOKEN` | Sim | Bearer para `POST /v1/person/sync` e rotas administrativas. |
 | `DEFENSE_IA_SERVER_URL` | Sim, para envio real | URL base do Defense IA. Ex: `http://192.168.0.10`. |
 | `DEFENSE_IA_USERNAME` | Sim, para envio real | Usuário da **API** no servidor Defense (ex.: `system`, em **minúsculas**). `System` pode falhar com código 2001 neste servidor. Não é o login do app Windows. |
 | `DEFENSE_IA_PASSWORD` | Sim, para envio real | Senha desse usuário de API no painel do Defense. |
@@ -45,10 +45,13 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 | `DEFENSE_IA_ORG_CODE` | Não | `orgCode` no cadastro de pessoa BRMS. Padrão: `001`. |
 | `DEFENSE_IA_KEEP_ALIVE_SECONDS` | Não | Intervalo de keep-alive BRMS. Padrão: `20`. |
 | `DEFENSE_IA_TIMEOUT_SECONDS` | Não | Timeout das chamadas HTTP. Padrão: `10`. |
-| `ADMIN_API_TOKEN` | Sim | Bearer do admin **e** do `POST /v1/person/sync` (startup grava hash na source `biodoc`). |
 | `BIODOC_INTEGRATION_KEY` | Opcional | Se definida, usada no sync/bootstrap em vez de `ADMIN_API_TOKEN`. |
 | `DEFAULT_INTEGRATION_SOURCE_NAME` | Não | Nome do `source` no JSON (padrão: `biodoc`). |
 | `DEFENSE_IA_EXPOSE_ERROR` | Não | `true` expõe detalhe bruto do Defense em `502` (só homologação). |
+| `BIODOC_API_URL` | Sim (webhook) | URL base da API BioDoc. Sandbox: `https://api.sandbox.biodoc.com.br/api`. Produção: `https://api.biodoc.com.br/api`. |
+| `BIODOC_TOKEN_API` | Sim (webhook) | Bearer para `GET /card/integration/mainimage` (TOKEN_API do painel BioDoc). |
+| `BIODOC_WEBHOOK_TOKEN` | Sim (webhook) | Token que o BioDoc envia no header `Authorization` do webhook. Deve corresponder ao valor configurado no painel BioDoc. |
+| `BIODOC_AMBIENTE` | Não | `sandbox` ou `production` — apenas para log/rastreabilidade. |
 
 Sem as variáveis do Defense IA, a API sobe com o client desabilitado. Isso permite testar `/health`, documentação OpenAPI e rotas que usam mocks em teste.
 
@@ -157,6 +160,89 @@ Quando `rotate_token` for `true`, a resposta traz uma nova `integration_key`.
 ```bash
 curl -X DELETE http://localhost:8000/v1/integration-sources/1 \
   -H "Authorization: Bearer $ADMIN_API_TOKEN"
+```
+
+## Webhook BioDoc — fluxo nativo
+
+O endpoint `/webhook/biodoc` recebe eventos automáticos do BioDoc após validação de liveness, consulta a API BioDoc para obter nome e foto, e sincroniza o beneficiário no Defense IA.
+
+**Guia completo (sandbox + produção, painel BioDoc, rede, checklist):** [docs/INTEGRACAO_BIODOC_AMBIENTE_REAL.md](docs/INTEGRACAO_BIODOC_AMBIENTE_REAL.md)
+
+### Configuração
+
+1. Preencha no `.env`:
+   ```
+   BIODOC_API_URL=https://api.sandbox.biodoc.com.br/api
+   BIODOC_TOKEN_API=<TOKEN_API do painel BioDoc>
+   BIODOC_WEBHOOK_TOKEN=<token que você define e configura no painel BioDoc>
+   ```
+2. No painel BioDoc, configure o WebHook:
+   - URL: `https://homologa.wolfx.com.br/webhook/biodoc`
+   - Token: mesmo valor de `BIODOC_WEBHOOK_TOKEN`
+
+### Fluxo técnico
+
+```
+Usuário realiza liveness no BioDoc
+        ↓
+BioDoc envia POST /webhook/biodoc
+  Authorization: Bearer <BIODOC_WEBHOOK_TOKEN>
+  { "card": "...", "success": true, "image": "...", ... }
+        ↓
+Middleware valida token + success
+        ↓
+GET BioDoc /card/integration/mainimage?idCard=<card>
+  → { name, card, status, image }
+        ↓
+Download da imagem URL → base64
+        ↓
+Upsert no Intelbras Defense IA
+  external_id = card, document = card, face = base64
+        ↓
+Resposta: { "status": "success", "external_id": "...", "defense_sync": "ok" }
+```
+
+### Payload enviado pelo BioDoc
+
+```json
+{
+  "confidence": "98",
+  "date": "2025-02-04T12:34:56Z",
+  "response": 201,
+  "message": "Cadastro realizado com sucesso!",
+  "card": "1234567890",
+  "image": "https://...",
+  "success": true,
+  "LogID": "abc-123"
+}
+```
+
+### Resposta em caso de sucesso (200)
+
+```json
+{
+  "status": "success",
+  "external_id": "1234567890",
+  "defense_sync": "ok"
+}
+```
+
+### Códigos de erro
+
+| Código | Causa |
+|--------|-------|
+| 401 | `BIODOC_WEBHOOK_TOKEN` inválido ou ausente |
+| 422 | `success: false` / `card` ausente / beneficiário inativo no BioDoc / sem imagem |
+| 502 | API BioDoc inacessível ou Defense IA retornou erro |
+| 503 | Defense IA não conectado no startup |
+
+### Teste local
+
+```bash
+python scripts/test_biodoc_webhook.py
+# Com opções:
+python scripts/test_biodoc_webhook.py --url https://homologa.wolfx.com.br --card 9999999999
+python scripts/test_biodoc_webhook.py --success false
 ```
 
 ## Duas URLs (não confundir)

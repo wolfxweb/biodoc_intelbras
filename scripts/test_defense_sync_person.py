@@ -34,6 +34,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Cadastro sem foto (facePictures vazio)",
     )
+    parser.add_argument(
+        "--name",
+        default="Pessoa Teste BIODOC",
+        help="Nome completo no Defense (padrão: Pessoa Teste BIODOC)",
+    )
     return parser.parse_args()
 
 
@@ -73,7 +78,7 @@ async def main() -> None:
         print(f"Antes do 1º sync — GET {path}: {'existe' if exists_before else 'nao existe'}")
 
         payload_create = SyncRequest.model_validate(
-            sync_payload(external_id, "Pessoa Teste BIODOC", face_b64)
+            sync_payload(external_id, args.name, face_b64)
         )
         result1 = await client.sync_person(payload_create)
         print(f"1º sync (esperado POST se novo): {result1}\n")
@@ -82,7 +87,7 @@ async def main() -> None:
         print(f"Depois do 1º sync — GET {path}: {'existe' if exists_after else 'nao existe'}")
 
         payload_update = SyncRequest.model_validate(
-            sync_payload(external_id, "Pessoa Teste BIODOC Atualizada", face_b64)
+            sync_payload(external_id, f"{args.name} Atualizada", face_b64)
         )
         result2 = await client.sync_person(payload_update)
         print(f"\n2º sync (esperado PUT): {result2}")

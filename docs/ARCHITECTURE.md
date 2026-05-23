@@ -2,7 +2,10 @@
 
 ## Visão Geral
 
-O middleware atua como uma **ponte entre o sistema BIODOC e a API do Intelbras Defense IA**. Ele recebe requisições HTTP autenticadas, valida os dados, e sincroniza pessoas (upsert) no sistema de controle de acesso da Intelbras.
+O middleware atua como uma **ponte entre o sistema BIODOC e a API do Intelbras Defense IA**. Suporta dois fluxos de entrada:
+
+- **Fluxo manual / API direta:** `POST /v1/person/sync` — qualquer sistema envia nome, documento e imagem; o middleware autentica via `ADMIN_API_TOKEN` e repassa ao Defense IA.
+- **Fluxo nativo BioDoc:** `POST /webhook/biodoc` — o BioDoc envia um evento de liveness; o middleware consulta a API BioDoc para obter nome e foto, e sincroniza o beneficiário no Defense IA.
 
 ---
 
@@ -10,20 +13,54 @@ O middleware atua como uma **ponte entre o sistema BIODOC e a API do Intelbras D
 
 ```
 src/
-├── main.py                          # Ponto de entrada: app FastAPI, CORS, rotas
+├── main.py                              # FastAPI, CORS, registro de routers
 ├── core/
-│   ├── lifespan.py                  # Startup/shutdown: inicia cliente Defense IA
-│   ├── logging.py                   # Configuração de logs com rotação diária
-│   └── security.py                  # Verificação do ADMIN_API_TOKEN
+│   ├── lifespan.py                      # Startup/shutdown: Defense IA + BioDoc clients
+│   ├── logging.py                       # Logs com rotação diária
+│   ├── security.py                      # Verificação ADMIN_API_TOKEN
+│   ├── database.py                      # SQLAlchemy: engine, Base, get_db
+│   └── bootstrap.py                     # ensure_integration_source no startup
+├── models/
+│   └── integration_source.py            # IntegrationSource (SQLite)
 ├── api/
-│   ├── dependencies.py              # Autenticação Bearer (HTTPBearer + verify)
-│   ├── schemas.py                   # Modelos de entrada/saída (Pydantic)
+│   ├── dependencies.py                  # Auth: admin, biodoc webhook, get_clients
+│   ├── schemas.py                       # SyncRequest/Response (Pydantic)
+│   ├── schemas_biodoc.py                # BiodocWebhookPayload/Response
 │   └── routes/
-│       └── sync.py                  # Rota POST /v1/person/sync
+│       ├── sync.py                      # POST /v1/person/sync
+│       └── webhook.py                   # POST /webhook/biodoc
 └── services/
-    ├── defense_ia_client.py         # Cliente HTTP para a API Intelbras
-    └── defense_ia_crypto.py         # Criptografia RSA para login
+    ├── defense_ia_client.py             # Cliente HTTP Intelbras (BRMS/legacy)
+    ├── defense_ia_crypto.py             # RSA para login BRMS
+    ├── defense_sync.py                  # Helper compartilhado: sync + mapeamento de erros
+    ├── biodoc_client.py                 # Cliente async API BioDoc (get_card_mainimage)
+    ├── biodoc_image.py                  # Download de imagem URL → base64
+    ├── biodoc_webhook_service.py        # Orquestrador fluxo webhook BioDoc
+    └── defense_visitor.py              # Utilitários visitante (scripts)
 ```
+
+---
+
+## Fluxo Webhook BioDoc
+
+```
+BioDoc Liveness ──POST /webhook/biodoc──▶ Middleware
+                   Authorization: Bearer BIODOC_WEBHOOK_TOKEN
+                   { card, success, image, LogID, ... }
+
+Middleware:
+  1. Valida Bearer (BIODOC_WEBHOOK_TOKEN)
+  2. Valida success=true e card presente
+  3. GET BioDoc /card/integration/mainimage?idCard=<card>
+     → { name, card, status, image }
+  4. Valida beneficiário ativo (status=true)
+  5. Download imagem URL → bytes → base64
+  6. Defense IA upsert via DefenseIAClient.sync_person()
+     external_id = card, document = card, face = base64
+  7. Responde BioDoc: { status, external_id, defense_sync }
+```
+
+Respostas de erro que fazem o BioDoc retentar (4xx) vs. falhas de infra (502/503).
 
 ---
 
@@ -31,13 +68,15 @@ src/
 
 Quando o container sobe, o FastAPI executa o `lifespan` em `src/core/lifespan.py`:
 
-1. Lê as variáveis de ambiente do `.env` (`DEFENSE_IA_SERVER_URL`, `DEFENSE_IA_USERNAME`, `DEFENSE_IA_PASSWORD`, etc.)
-2. Cria uma instância de `DefenseIAClient` via `build_defense_client_from_env()`
-3. Chama `defense_client.start()`, que:
+1. Lê as variáveis de ambiente do `.env`.
+2. Cria `DefenseIAClient` via `build_defense_client_from_env()` e chama `start()`:
    - Cria o `httpx.AsyncClient` (conexão HTTP persistente)
    - Faz o **login inicial** no Defense IA
    - Se o login falhar, loga um warning e **continua** (não derruba o servidor)
    - Inicia a **task de keep-alive em background**
+3. Cria `BiodocClient` via `build_biodoc_client_from_env()` e chama `start()`:
+   - Cria um `httpx.AsyncClient` com base URL e token da API BioDoc
+   - Não faz nenhuma chamada no startup (stateless, sem token persistente)
 
 Ao desligar (SIGTERM ou restart), o `finally` do lifespan fecha o cliente HTTP e cancela o keep-alive.
 

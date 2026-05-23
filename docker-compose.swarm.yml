@@ -1,0 +1,45 @@
+version: "3.7"
+
+services:
+
+## --------------------------- biodoc_intelbras --------------------------- ##
+
+  biodoc_api:
+    image: localhost:5000/biodoc-intelbras:latest
+
+    volumes:
+      - /root/biodoc_intelbras/data:/app/data
+      - /root/biodoc_intelbras/log:/log
+
+    env_file:
+      - /root/biodoc_intelbras/.env
+
+    networks:
+      - server
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.biodoc_api.rule=Host(`homologa.wolfx.com.br`)
+        - traefik.http.routers.biodoc_api.entrypoints=websecure
+        - traefik.http.routers.biodoc_api.priority=10
+        - traefik.http.routers.biodoc_api.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.biodoc_api.service=biodoc_api
+        - traefik.http.services.biodoc_api.loadbalancer.server.port=8000
+        - traefik.http.services.biodoc_api.loadbalancer.passHostHeader=1
+
+## --------------------------- biodoc_intelbras --------------------------- ##
+
+networks:
+  server:
+    external: true
+    name: server

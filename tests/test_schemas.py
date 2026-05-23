@@ -1,15 +1,19 @@
+import base64
+
 import pytest
 from pydantic import ValidationError
 
 from src.api.schemas import SyncRequest
 
+# Mínimo base64 JPEG válido: magic bytes + padding para >= 1024 bytes
+_FAKE_JPEG_B64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 2048).decode()
 
 VALID_PAYLOAD = {
     "source": "biodoc",
     "operation": "upsert",
     "external_id": "123",
     "person": {"full_name": "Maria Silva", "document": "12345678900"},
-    "biometrics": {"face_image_base64": "base64-image"},
+    "biometrics": {"face_image_base64": _FAKE_JPEG_B64},
 }
 
 
