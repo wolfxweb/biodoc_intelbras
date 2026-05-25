@@ -28,9 +28,14 @@ build/
 *.egg-info/
 
 # SDK e documentação binária da Intelbras (grandes e não-versionáveis)
-docs/Defense IA*/
+# Observação: as pastas docs/Defense IA - API e docs/Defense IA - SDK são versionadas
+# apenas em seus arquivos textuais; os binários (.dll, .exe, .zip, .lib) seguem
+# bloqueados pelas regras globais abaixo.
 docs/_extracted/
 docs/defense_ia.zip
+# Exceção: liberar a pasta .NET do SDK (a regra global ".*" a estava ignorando)
+!docs/Defense IA - SDK/.NET/
+!docs/Defense IA - SDK/.NET/**
 
 # Arquivos binários / compactados
 *.zip

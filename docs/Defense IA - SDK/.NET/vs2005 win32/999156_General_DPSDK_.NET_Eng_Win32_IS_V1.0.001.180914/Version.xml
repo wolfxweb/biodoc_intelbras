@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Versioninfo>
+	<Module name="PlatformSDK" path="/BASPlatform/DSSModule/PlatformSDK/Branches/P_2018.05.24_PlatformSDK_Express_Trunk" version="999156">
+		<Module name="PlatformSDK" path="/BASPlatform/DSSModule/DSRP/Trunk" version="909262"/>
+		<External name="VAXPlayer" path="^/DSSModule/Bin/3rdParty/VAXPlayer" version="937154"/>
+		<External name="IVSDrawer" path="^/DSSModule/Bin/3rdParty/IVSDrawer" version="869270"/>
+		<External name="Infra" path="^/DSSModule/Bin/3rdParty/Infra" version="930879"/>
+		<External name="H264Parser" path="^/DSSModule/Bin/3rdParty/H264Parser" version="366999"/>
+		<External name="H265Parser" path="^/DSSModule/Bin/3rdParty/H265Parser" version="299793"/>
+		<External name="G726Enc" path="^/DSSModule/Bin/3rdParty/G726Enc" version="551178"/>
+		<External name="NetSdk" path="^/DSSModule/Bin/3rdParty/NetSdk" version="842906"/>
+		<External name="StreamParser" path="^/DSSModule/Bin/3rdParty/StreamParser" version="930878"/>
+		<External name="vcredist" path="^/DSSModule/Bin/3rdParty/vcredist" version="872739"/>
+		<External name="Sip" path="^/DSSModule/Bin/3rdParty/Sip4" version="861588"/>
+	</Module>
+</Versioninfo>
