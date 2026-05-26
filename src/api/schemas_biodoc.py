@@ -2,43 +2,48 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class BiodocWebhookPayload(BaseModel):
     """
-    Payload enviado pelo BioDoc no evento de cadastro/liveness.
+    Payload enviado pelo BioDoc no evento de cadastro/liveness (formato 150r).
 
     Exemplo:
         {
-          "confidence": "98",
-          "date": "2025-02-04T12:34:56Z",
-          "response": 201,
-          "message": "Cadastro realizado com sucesso!",
-          "card": "1234567890",
-          "image": "https://...",
+          "id_Log": 1000,
+          "percentage": "100%",
           "success": true,
-          "LogID": "abc-123"
+          "status": 2,
+          "message": "Sucesso ao realizar autenticação, nível de similaridade 100% e qualidade 100%.",
+          "url": "https://api.sandbox.com.br/api/file/305",
+          "reference_Id": "0c19bfff-9aba-4517-afd7-56e77ea1faeb"
         }
+
+    Após receber, o middleware consulta `GET /integrations/log/{reference_Id}` na
+    API BioDoc para obter `id_Card`, `name`, `mainImage` e `reguiredName`, que são
+    usados para sincronizar o beneficiário no Defense IA.
     """
 
-    confidence: str | None = None
-    date: str | None = None
-    response: int | None = None
-    message: str | None = None
-    card: str | None = Field(default=None, description="Identificador do cartão/beneficiário")
-    image: str | None = Field(default=None, description="URL da imagem de liveness")
+    id_Log: int | None = Field(default=None, description="ID numérico do log no BioDoc")
+    percentage: str | None = Field(
+        default=None, description="Similaridade/qualidade reportada pelo BioDoc (ex.: '100%')"
+    )
     success: bool = Field(default=False)
-    LogID: str | None = None
-
-    @field_validator("card")
-    @classmethod
-    def card_max_length(cls, v: str | None) -> str | None:
-        if v is not None and len(v) > 30:
-            raise ValueError(
-                f"card '{v[:30]}...' excede 30 caracteres — não pode ser usado como external_id no Defense IA"
-            )
-        return v
+    status: int | None = Field(
+        default=None, description="Status BioDoc da interação (1/2 = ativo)"
+    )
+    message: str | None = None
+    url: str | None = Field(
+        default=None, description="URL temporária da imagem capturada (fallback)"
+    )
+    reference_Id: str | None = Field(
+        default=None,
+        description=(
+            "UUID da interação BioDoc — usado para consultar "
+            "GET /integrations/log/{reference_Id}"
+        ),
+    )
 
 
 class BiodocWebhookResponse(BaseModel):

@@ -3,7 +3,7 @@ Helper compartilhado para sincronizar um SyncRequest no Defense IA
 e mapear as exceções do cliente para HTTPException do FastAPI.
 
 Usado por:
-  - src/api/routes/sync.py  (rota POST /v1/person/sync)
+  - src/api/routes/sync.py  (rota POST /v1/visitor/sync)
   - src/services/biodoc_webhook_service.py  (fluxo webhook BioDoc)
 """
 
@@ -35,7 +35,7 @@ async def sync_to_defense(
     Args:
         sync_request: payload validado (source, operation, external_id, person, biometrics)
         defense_client: cliente Intelbras já iniciado
-        log_context: prefixo opcional para mensagens de log (ex: "[WEBHOOK] LogID=abc")
+        log_context: prefixo opcional para mensagens de log (ex: "[WEBHOOK] ref=abc")
     """
     prefix = f"{log_context} " if log_context else ""
 

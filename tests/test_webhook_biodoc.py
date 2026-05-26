@@ -36,14 +36,13 @@ from src.services.defense_ia_client import (
 WEBHOOK_TOKEN = "test-webhook-token"
 
 VALID_PAYLOAD = {
-    "confidence": "98",
-    "date": "2025-02-04T12:34:56Z",
-    "response": 201,
-    "message": "Cadastro realizado com sucesso!",
-    "card": "1234567890",
-    "image": "https://example.com/face.jpg",
+    "id_Log": 1000,
+    "percentage": "100%",
     "success": True,
-    "LogID": "abc-123",
+    "status": 2,
+    "message": "Sucesso ao realizar autenticação, nível de similaridade 100% e qualidade 100%.",
+    "url": "https://example.com/face.jpg",
+    "reference_Id": "0c19bfff-9aba-4517-afd7-56e77ea1faeb",
 }
 
 VALID_HEADERS = {"Authorization": f"Bearer {WEBHOOK_TOKEN}"}
@@ -184,29 +183,11 @@ async def test_webhook_success_false_returns_422(webhook_client: WebhookFixture)
 
 
 @pytest.mark.asyncio
-async def test_webhook_missing_logid_returns_422(webhook_client: WebhookFixture):
-    payload = {**VALID_PAYLOAD, "LogID": None}
+async def test_webhook_missing_reference_id_returns_422(webhook_client: WebhookFixture):
+    payload = {**VALID_PAYLOAD, "reference_Id": None}
     response = await webhook_client.client.post("/webhook/biodoc", json=payload, headers=VALID_HEADERS)
     assert response.status_code == 422
-    assert "LogID" in response.json()["detail"]
-
-
-@pytest.mark.asyncio
-async def test_webhook_card_too_long_returns_422(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
-
-    defense_mock = _make_defense_mock()
-    biodoc_mock = _make_biodoc_mock()
-    app.dependency_overrides[get_defense_client] = lambda: defense_mock
-    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        payload = {**VALID_PAYLOAD, "card": "X" * 31}
-        response = await client.post("/webhook/biodoc", json=payload, headers=VALID_HEADERS)
-
-    app.dependency_overrides.clear()
-    assert response.status_code == 422
+    assert "reference_Id" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +201,8 @@ async def test_webhook_success_flow(webhook_client: WebhookFixture):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "success"
-    assert body["external_id"] == VALID_PAYLOAD["card"]
+    # external_id vem do id_Card retornado pelo GET /integrations/log/{reference_Id}
+    assert body["external_id"] == "1234567890"
     assert body["defense_sync"] == "ok"
 
 
@@ -237,16 +219,19 @@ async def test_webhook_success_calls_defense_sync_with_payload(webhook_client: W
     response = await webhook_client.client.post("/webhook/biodoc", json=VALID_PAYLOAD, headers=VALID_HEADERS)
     assert response.status_code == 200
 
-    webhook_client.biodoc_mock.get_integration_log.assert_awaited_once_with(VALID_PAYLOAD["LogID"])
+    webhook_client.biodoc_mock.get_integration_log.assert_awaited_once_with(
+        VALID_PAYLOAD["reference_Id"]
+    )
     webhook_client.defense_mock.sync_person.assert_awaited_once()
 
     call_args = webhook_client.defense_mock.sync_person.await_args
     sync_req = call_args[0][0]
     assert sync_req.source == "biodoc"
     assert sync_req.operation == "upsert"
-    assert sync_req.external_id == VALID_PAYLOAD["card"]
+    # external_id e document vêm do id_Card mockado em _make_biodoc_mock
+    assert sync_req.external_id == "1234567890"
     assert sync_req.person.full_name == MOCK_USER_NAME
-    assert sync_req.person.document == VALID_PAYLOAD["card"]
+    assert sync_req.person.document == "1234567890"
     assert sync_req.biometrics.face_image_base64
     assert len(sync_req.biometrics.face_image_base64) > 100
 
@@ -404,7 +389,7 @@ async def test_webhook_no_image_returns_422(monkeypatch: pytest.MonkeyPatch):
     defense_mock = _make_defense_mock()
     biodoc_mock = _make_biodoc_mock(main_image=None)
 
-    payload = {**VALID_PAYLOAD, "image": None}
+    payload = {**VALID_PAYLOAD, "url": None}
     app.dependency_overrides[get_defense_client] = lambda: defense_mock
     app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
 

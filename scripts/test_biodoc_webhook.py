@@ -3,9 +3,9 @@ Simula o envio de um webhook BioDoc para o middleware local ou de homologação.
 
 Uso:
   python scripts/test_biodoc_webhook.py
-  python scripts/test_biodoc_webhook.py --url https://homologa.wolfx.com.br
+  python scripts/test_biodoc_webhook.py --middleware-url https://homologa.wolfx.com.br
   python scripts/test_biodoc_webhook.py --success false
-  python scripts/test_biodoc_webhook.py --card 9999999999
+  python scripts/test_biodoc_webhook.py --reference-id <uuid-da-interacao>
 
 Requer no .env (ou variáveis de ambiente):
   BIODOC_WEBHOOK_TOKEN   — mesmo token configurado no painel BioDoc
@@ -18,7 +18,6 @@ import os
 import sys
 from pathlib import Path
 
-# Permite rodar da raiz do projeto sem instalar o pacote
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 if os.getenv("SKIP_DOTENV") != "1":
@@ -34,14 +33,10 @@ import httpx
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Simula webhook BioDoc → middleware")
     parser.add_argument(
-        "--url",
+        "--middleware-url",
+        dest="middleware_url",
         default=os.getenv("MIDDLEWARE_URL", "http://localhost:8000"),
         help="Base URL do middleware (padrão: MIDDLEWARE_URL do .env)",
-    )
-    parser.add_argument(
-        "--card",
-        default="1234567890",
-        help="Número do cartão/beneficiário (padrão: 1234567890)",
     )
     parser.add_argument(
         "--success",
@@ -50,14 +45,34 @@ def parse_args() -> argparse.Namespace:
         help="Simular sucesso ou falha do liveness (padrão: true)",
     )
     parser.add_argument(
-        "--image",
-        default="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Camponotus_flavomarginatus_ant.jpg/320px-Camponotus_flavomarginatus_ant.jpg",
-        help="URL de imagem para o payload",
+        "--status",
+        type=int,
+        default=2,
+        help="Status BioDoc da interação (1/2 = ativo, padrão: 2)",
     )
     parser.add_argument(
-        "--log-id",
-        default="test-script-001",
-        help="LogID a incluir no payload (padrão: test-script-001)",
+        "--image-url",
+        dest="image_url",
+        default="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Camponotus_flavomarginatus_ant.jpg/320px-Camponotus_flavomarginatus_ant.jpg",
+        help="URL temporária da imagem capturada (campo 'url' do payload)",
+    )
+    parser.add_argument(
+        "--reference-id",
+        dest="reference_id",
+        default="0c19bfff-9aba-4517-afd7-56e77ea1faeb",
+        help="reference_Id (UUID) a incluir no payload (padrão: UUID de teste)",
+    )
+    parser.add_argument(
+        "--id-log",
+        dest="id_log",
+        type=int,
+        default=1000,
+        help="id_Log numérico do BioDoc (padrão: 1000)",
+    )
+    parser.add_argument(
+        "--percentage",
+        default="100%",
+        help="Similaridade reportada pelo BioDoc (padrão: 100%%)",
     )
     return parser.parse_args()
 
@@ -71,16 +86,20 @@ def main() -> None:
         print("  Adicione: BIODOC_WEBHOOK_TOKEN=<mesmo token configurado no painel BioDoc>")
         sys.exit(1)
 
-    endpoint = f"{args.url.rstrip('/')}/webhook/biodoc"
+    endpoint = f"{args.middleware_url.rstrip('/')}/webhook/biodoc"
+    success = args.success == "true"
     payload = {
-        "confidence": "98",
-        "date": "2025-02-04T12:34:56Z",
-        "response": 201,
-        "message": "Cadastro realizado com sucesso!" if args.success == "true" else "Falha no liveness",
-        "card": args.card,
-        "image": args.image,
-        "success": args.success == "true",
-        "LogID": args.log_id,
+        "id_Log": args.id_log,
+        "percentage": args.percentage,
+        "success": success,
+        "status": args.status,
+        "message": (
+            "Sucesso ao realizar autenticação, nível de similaridade 100% e qualidade 100%."
+            if success
+            else "Falha no liveness"
+        ),
+        "url": args.image_url,
+        "reference_Id": args.reference_id,
     }
     headers = {
         "Authorization": f"Bearer {token}",

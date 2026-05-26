@@ -192,17 +192,17 @@ Usuário realiza liveness no BioDoc
         ↓
 BioDoc envia POST /webhook/biodoc
   Authorization: Bearer <BIODOC_WEBHOOK_TOKEN>
-  { "card": "...", "success": true, "image": "...", ... }
+  { "reference_Id": "...", "success": true, "url": "...", "status": 2, ... }
         ↓
-Middleware valida token + success
+Middleware valida token + success + reference_Id
         ↓
-GET BioDoc /card/integration/mainimage?idCard=<card>
-  → { name, card, status, image }
+GET BioDoc /integrations/log/{reference_Id}
+  → { id_Card, name, status, mainImage, path, reguiredName }
         ↓
-Download da imagem URL → base64
+Download da imagem URL (mainImage > path > url) → base64
         ↓
 Upsert no Intelbras Defense IA
-  external_id = card, document = card, face = base64
+  external_id = id_Card, document = id_Card, face = base64
         ↓
 Resposta: { "status": "success", "external_id": "...", "defense_sync": "ok" }
 ```
@@ -211,14 +211,13 @@ Resposta: { "status": "success", "external_id": "...", "defense_sync": "ok" }
 
 ```json
 {
-  "confidence": "98",
-  "date": "2025-02-04T12:34:56Z",
-  "response": 201,
-  "message": "Cadastro realizado com sucesso!",
-  "card": "1234567890",
-  "image": "https://...",
+  "id_Log": 1000,
+  "percentage": "100%",
   "success": true,
-  "LogID": "abc-123"
+  "status": 2,
+  "message": "Sucesso ao realizar autenticação, nível de similaridade 100% e qualidade 100%.",
+  "url": "https://api.sandbox.com.br/api/file/305",
+  "reference_Id": "0c19bfff-9aba-4517-afd7-56e77ea1faeb"
 }
 ```
 
@@ -237,7 +236,7 @@ Resposta: { "status": "success", "external_id": "...", "defense_sync": "ok" }
 | Código | Causa |
 |--------|-------|
 | 401 | `BIODOC_WEBHOOK_TOKEN` inválido ou ausente |
-| 422 | `success: false` / `card` ausente / beneficiário inativo no BioDoc / sem imagem |
+| 422 | `success: false` / `reference_Id` ausente / beneficiário inativo no BioDoc (status fora de 1/2) / sem imagem |
 | 502 | API BioDoc inacessível ou Defense IA retornou erro |
 | 503 | Defense IA não conectado no startup |
 

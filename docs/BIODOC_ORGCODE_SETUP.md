@@ -150,7 +150,7 @@ conhecida, a pessoa cai no `DEFENSE_IA_ORG_CODE` raiz do `.env` (default:
 `logger.warning`:
 
 ```
-[WEBHOOK] LogID=xxx reguiredName='Inexistente' sem sub-org correspondente, usando 001
+[WEBHOOK] ref=xxx reguiredName='Inexistente' sem sub-org correspondente, usando 001
 ```
 
 Para mapear uma sub-org criada após o middleware ter bootado, rode
@@ -168,15 +168,15 @@ container.
           │ liveness / cadastro
           ▼
 ┌───────────────────┐
-│ 2) Webhook BioDoc │  POST /webhook/biodoc {LogID, card, ...}
+│ 2) Webhook BioDoc │  POST /webhook/biodoc {reference_Id, success, status, url, ...}
 └─────────┬─────────┘
           │
           ▼
-┌──────────────────────────────────┐
-│ 3) Middleware (este projeto)     │
-│                                  │
-│  a) GET /integrations/log/{LogID}│ ── busca dados completos no BioDoc
-│     -> retorna reguiredName       │
+┌────────────────────────────────────────┐
+│ 3) Middleware (este projeto)           │
+│                                        │
+│  a) GET /integrations/log/{reference_Id}│ ── busca dados completos no BioDoc
+│     -> retorna id_Card e reguiredName  │
 │                                  │
 │  b) defense_client.resolve_org_code(reguiredName)
 │     -> "001015001" (atalho dígito) │
@@ -351,7 +351,7 @@ painel desktop vinculou à sub-org `Corb`.
 
 | Arquivo | Função |
 |---|---|
-| `src/services/biodoc_client.py` | Lê `reguiredName` da resposta `/integrations/log/{LogID}` |
+| `src/services/biodoc_client.py` | Lê `reguiredName` da resposta `/integrations/log/{reference_Id}` |
 | `src/services/biodoc_webhook_service.py` | Orquestra resolução `reguiredName → orgCode` |
 | `src/services/defense_ia_client.py` | `list_person_orgs()`, `resolve_org_code()`, `build_person_payload()` |
 | `scripts/list_person_orgs.py` | CLI para listar sub-orgs e refrescar cache |

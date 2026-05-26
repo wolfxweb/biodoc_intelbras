@@ -36,11 +36,12 @@ async def webhook_biodoc(
     defense_client: Annotated[DefenseIAClient, Depends(get_defense_client)],
 ) -> BiodocWebhookResponse:
     logger.info(
-        "[WEBHOOK] recebido LogID=%s card=%s success=%s confidence=%s",
-        payload.LogID,
-        payload.card,
+        "[WEBHOOK] recebido reference_Id=%s id_Log=%s success=%s status=%s percentage=%s",
+        payload.reference_Id,
+        payload.id_Log,
         payload.success,
-        payload.confidence,
+        payload.status,
+        payload.percentage,
     )
     result = await process_biodoc_webhook(payload, biodoc_client, defense_client)
     return BiodocWebhookResponse(**result)

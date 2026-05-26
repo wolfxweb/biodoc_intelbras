@@ -199,23 +199,22 @@ Corpo (exemplo):
 
 ```json
 {
-  "confidence": "98",
-  "date": "2025-02-04T12:34:56Z",
-  "response": 201,
-  "message": "Cadastro realizado com sucesso!",
-  "card": "1234567890",
-  "image": "https://...",
+  "id_Log": 1000,
+  "percentage": "100%",
   "success": true,
-  "LogID": "abc-123"
+  "status": 2,
+  "message": "Sucesso ao realizar autenticação, nível de similaridade 100% e qualidade 100%.",
+  "url": "https://api.sandbox.com.br/api/file/305",
+  "reference_Id": "0c19bfff-9aba-4517-afd7-56e77ea1faeb"
 }
 ```
 
-### 4. Validar TOKEN_API (consulta de beneficiário)
+### 4. Validar TOKEN_API (consulta da interação)
 
-O middleware chama:
+Com o `reference_Id` recebido no webhook, o middleware chama:
 
 ```http
-GET {BIODOC_API_URL}/card/integration/mainimage?idCard=<card>
+GET {BIODOC_API_URL}/integrations/log/{reference_Id}
 Authorization: Bearer <BIODOC_TOKEN_API>
 ```
 
@@ -223,16 +222,17 @@ Resposta esperada (estrutura simplificada):
 
 ```json
 {
-  "data": {
-    "name": "Nome do Beneficiário",
-    "card": "1234567890",
-    "status": true,
-    "image": "https://url-da-foto.jpg"
-  }
+  "id": 1,
+  "id_Card": "1234567890",
+  "name": "Nome do Beneficiário",
+  "status": 2,
+  "mainImage": "https://url-temporaria-da-foto.jpg",
+  "path": "https://url-temporaria-da-foto.jpg",
+  "reguiredName": "Nome da empresa que realizou a interação"
 }
 ```
 
-Se `status` for `false`, o middleware responde **422** e **não** envia ao Defense.
+Se `status` não for **1** ou **2** (ativo), o middleware responde **422** e **não** envia ao Defense.
 
 ### 5. Mapeamento no Defense IA
 

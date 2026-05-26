@@ -46,18 +46,19 @@ src/
 ```
 BioDoc Liveness ──POST /webhook/biodoc──▶ Middleware
                    Authorization: Bearer BIODOC_WEBHOOK_TOKEN
-                   { card, success, image, LogID, ... }
+                   { id_Log, reference_Id, success, status, url, percentage, ... }
 
 Middleware:
   1. Valida Bearer (BIODOC_WEBHOOK_TOKEN)
-  2. Valida success=true e card presente
-  3. GET BioDoc /card/integration/mainimage?idCard=<card>
-     → { name, card, status, image }
-  4. Valida beneficiário ativo (status=true)
-  5. Download imagem URL → bytes → base64
-  6. Defense IA upsert via DefenseIAClient.sync_person()
-     external_id = card, document = card, face = base64
-  7. Responde BioDoc: { status, external_id, defense_sync }
+  2. Valida success=true e reference_Id presente
+  3. GET BioDoc /integrations/log/{reference_Id}
+     → { id_Card, name, status, mainImage, path, reguiredName }
+  4. Valida beneficiário ativo (status ∈ {1,2})
+  5. Download imagem URL (mainImage > path > url) → bytes → base64
+  6. Resolve reguiredName → orgCode no Defense IA
+  7. Defense IA upsert via DefenseIAClient.sync_person()
+     external_id = id_Card, document = id_Card, face = base64
+  8. Responde BioDoc: { status, external_id, defense_sync }
 ```
 
 Respostas de erro que fazem o BioDoc retentar (4xx) vs. falhas de infra (502/503).

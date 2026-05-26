@@ -148,7 +148,7 @@ class BiodocClient:
         """
         GET /integrations/log/{reference_id}
 
-        Endpoint de webhook: retorna os dados do log de integracao pelo LogID
+        Endpoint de webhook: retorna os dados do log de integracao pelo reference_Id
         recebido no webhook BioDoc. Inclui o `reguiredName` que e mapeado para
         `accessGroupId` no Defense IA via DEFENSE_IA_ACCESS_GROUP_MAP.
 

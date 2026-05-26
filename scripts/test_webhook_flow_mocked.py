@@ -3,11 +3,11 @@ Teste do fluxo webhook BioDoc → Defense IA com dados mockados.
 
 Não chama a API BioDoc nem o servidor Defense de verdade. Injeta mocks
 via dependency overrides do FastAPI e mostra cada etapa + o payload que
-seria enviado ao Defense (sync_person).
+seria enviado ao Defense (sync_person / ACS person).
 
 Uso:
   python scripts/test_webhook_flow_mocked.py
-  python scripts/test_webhook_flow_mocked.py --card 9876543210 --name "teste webhook"
+  python scripts/test_webhook_flow_mocked.py --reference-id mock-uuid-001 --name "teste webhook"
 """
 
 from __future__ import annotations
@@ -31,19 +31,35 @@ import httpx
 from src.api.dependencies import get_biodoc_client, get_defense_client
 from src.api.schemas import SyncRequest
 from src.main import app
-from src.services.biodoc_client import BiodocClient, CardMainImageData
+from src.services.biodoc_client import BiodocClient, IntegrationLogData
 from src.services.defense_ia_client import DefenseIASettings
 
 _DUMMY_JPEG = b"\xff\xd8\xff" + b"\x00" * 2048
 _FACE_B64 = base64.b64encode(_DUMMY_JPEG).decode()
 DEFAULT_NAME = "teste webhook"
+DEFAULT_CARD = "1234567890"
+DEFAULT_REFERENCE_ID = "0c19bfff-9aba-4517-afd7-56e77ea1faeb"
+DEFAULT_ID_LOG = 1000
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fluxo webhook mockado: BioDoc API + download imagem + Defense sync_person",
+        description="Fluxo webhook mockado: BioDoc API + download imagem + Defense sync_visitor",
     )
-    parser.add_argument("--card", default="1234567890", help="Número do cartão no payload")
+    parser.add_argument("--card", default=DEFAULT_CARD, help="Número do cartão (id_Card) retornado pelo mock BioDoc")
+    parser.add_argument(
+        "--reference-id",
+        dest="reference_id",
+        default=DEFAULT_REFERENCE_ID,
+        help="reference_Id (UUID) no payload",
+    )
+    parser.add_argument(
+        "--id-log",
+        dest="id_log",
+        type=int,
+        default=DEFAULT_ID_LOG,
+        help="id_Log numérico no payload",
+    )
     parser.add_argument(
         "--name",
         default=DEFAULT_NAME,
@@ -51,6 +67,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--image-url",
+        dest="image_url",
         default="https://example.com/face-mock.jpg",
         help="URL de imagem (download também é mockado)",
     )
@@ -72,11 +89,14 @@ def _make_defense_mock() -> AsyncMock:
 
 def _make_biodoc_mock(card: str, name: str, image_url: str) -> AsyncMock:
     client = AsyncMock(spec=BiodocClient)
-    client.get_card_mainimage.return_value = CardMainImageData(
+    client.get_integration_log.return_value = IntegrationLogData(
+        id=1,
+        id_card=card,
         name=name,
-        card=card,
-        status=True,
-        image=image_url,
+        status=1,
+        main_image=image_url,
+        path=None,
+        required_name="Empresa Mock",
     )
     return client
 
@@ -89,6 +109,7 @@ def _step(n: int, title: str, detail: str = "") -> None:
 
 async def run_flow(args: argparse.Namespace) -> int:
     card = args.card
+    reference_id = args.reference_id
     webhook_token = os.environ["BIODOC_WEBHOOK_TOKEN"]
 
     defense_mock = _make_defense_mock()
@@ -98,21 +119,20 @@ async def run_flow(args: argparse.Namespace) -> int:
     app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
 
     payload = {
-        "confidence": "98",
-        "date": "2025-02-04T12:34:56Z",
-        "response": 201,
-        "message": "Cadastro realizado com sucesso!",
-        "card": card,
-        "image": args.image_url,
+        "id_Log": args.id_log,
+        "percentage": "100%",
         "success": True,
-        "LogID": "mock-flow-001",
+        "status": 2,
+        "message": "Sucesso ao realizar autenticação, nível de similaridade 100% e qualidade 100%.",
+        "url": args.image_url,
+        "reference_Id": reference_id,
     }
     headers = {"Authorization": f"Bearer {webhook_token}"}
 
     print("=" * 60)
-    print("Teste mockado: POST /webhook/biodoc → Defense sync_person")
+    print("Teste mockado: POST /webhook/biodoc → Defense sync_person (ACS person)")
     print("=" * 60)
-    print(f"Card: {card} | Nome mock BioDoc: {args.name}")
+    print(f"Card: {card} | reference_Id: {reference_id} | id_Log: {args.id_log} | Nome mock BioDoc: {args.name}")
     print("(BioDoc API e Defense IA reais NÃO são chamados)")
 
     _step(1, "POST /webhook/biodoc", json.dumps(payload, ensure_ascii=False)[:120] + "...")
@@ -143,8 +163,8 @@ async def run_flow(args: argparse.Namespace) -> int:
         print("\n[FALHA] Webhook não retornou 200 — fluxo interrompido antes do Defense.")
         return 1
 
-    biodoc_mock.get_card_mainimage.assert_awaited_once_with(card)
-    _step(3, "BioDoc mock: get_card_mainimage", f"idCard={card} → name={args.name}, status=True")
+    biodoc_mock.get_integration_log.assert_awaited_once_with(reference_id)
+    _step(3, "BioDoc mock: get_integration_log", f"reference_Id={reference_id} → id_card={card}, name={args.name}, status=1")
 
     _step(4, "Download imagem mockado", f"base64 len={len(_FACE_B64)} chars")
 
@@ -163,7 +183,7 @@ async def run_flow(args: argparse.Namespace) -> int:
             "face_image_base64": f"<{len(sync_req.biometrics.face_image_base64 or '')} chars>",
         },
     }
-    _step(5, "Defense mock: sync_person (upsert)", json.dumps(defense_payload, indent=2, ensure_ascii=False))
+    _step(5, "Defense mock: sync_person / ACS person (upsert)", json.dumps(defense_payload, indent=2, ensure_ascii=False))
 
     assert sync_req.source == "biodoc"
     assert sync_req.operation == "upsert"
