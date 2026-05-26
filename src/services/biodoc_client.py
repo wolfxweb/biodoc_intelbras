@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import httpx
@@ -157,7 +158,7 @@ class BiodocClient:
         if self._client is None:
             raise BiodocAPIUnavailableError("BiodocClient não iniciado")
 
-        logger.debug("[BIODOC OUT] GET /integrations/log/%s", reference_id)
+        logger.info("[BIODOC OUT] GET /integrations/log/%s", reference_id)
         try:
             response = await self._client.get(f"/integrations/log/{reference_id}")
         except httpx.TimeoutException as exc:
@@ -169,16 +170,27 @@ class BiodocClient:
                 f"Erro de rede ao consultar BioDoc (reference_id={reference_id}): {exc}"
             ) from exc
 
-        logger.debug(
+        logger.info(
             "[BIODOC IN] GET /integrations/log/%s status=%d",
             reference_id,
             response.status_code,
         )
 
         if response.status_code == 401:
+            logger.warning(
+                "[BIODOC IN] body 401 reference_id=%s body=%s",
+                reference_id,
+                response.text[:500],
+            )
             raise BiodocAPIUnauthorizedError("BIODOC_TOKEN_API recusado pela API BioDoc")
 
         if not response.is_success:
+            logger.warning(
+                "[BIODOC IN] body status=%d reference_id=%s body=%s",
+                response.status_code,
+                reference_id,
+                response.text[:500],
+            )
             raise BiodocAPIUnavailableError(
                 f"API BioDoc retornou status inesperado {response.status_code} "
                 f"para reference_id={reference_id}"
@@ -190,6 +202,15 @@ class BiodocClient:
             raise BiodocAPIUnavailableError(
                 "Resposta inválida da API BioDoc (JSON malformado)"
             ) from exc
+
+        try:
+            logger.info(
+                "[BIODOC IN] body reference_id=%s json=%s",
+                reference_id,
+                json.dumps(body, ensure_ascii=False),
+            )
+        except (TypeError, ValueError):
+            logger.info("[BIODOC IN] body reference_id=%s json=<unserializable>", reference_id)
 
         if not isinstance(body, dict):
             raise BiodocAPIUnavailableError(
