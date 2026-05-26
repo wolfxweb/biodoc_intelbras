@@ -13,11 +13,16 @@ from src.services.defense_ia_crypto import resolve_login_public_key
 
 API_MODE_BRMS = "brms"
 BRMS_PERSON = "/obms/api/v1.1/acs/person"
+BRMS_VISITOR = "/obms/api/v1.0/visitors/visitor"
 API_MODE_LEGACY = "legacy"
 
 
 def brms_person_path(person_id: str) -> str:
     return f"{BRMS_PERSON}/{person_id}"
+
+
+def brms_visitor_path(visitor_id: str) -> str:
+    return f"{BRMS_VISITOR}/{visitor_id}"
 
 
 BRMS_AUTHORIZE = "/brms/api/v1.0/accounts/authorize"
@@ -28,6 +33,14 @@ LEGACY_UPDATE_TOKEN = "/admin/API/accounts/updateToken"
 
 JSON_HEADERS = {"content-type": "application/json;charset=UTF-8"}
 SUCCESS_CODES = (None, 0, "0", 1000, "1000")
+
+# Endpoint usado para inferir as sub-organizações cadastradas no Defense IA.
+# Não há endpoint público de listagem de orgs neste servidor (BRMS 3.x da Unimed
+# retorna 404 em /obms/.../org/list), então a inferência é feita varrendo as
+# pessoas existentes e coletando pares (orgCode, orgName).
+BRMS_PERSON_PAGE = "/obms/api/v1.1/acs/person/page"
+PERSON_ORGS_CACHE_TTL_SECONDS = 1800.0
+PERSON_ORGS_PAGE_SIZE = 200
 
 
 class DefenseIAError(Exception):
@@ -64,6 +77,7 @@ class DefenseIASettings:
     org_code: str = "001"
     keep_alive_interval_seconds: float = 20.0
     timeout_seconds: float = 10.0
+    visited_person_id: str = ""
 
     @property
     def enabled(self) -> bool:
@@ -102,6 +116,12 @@ class DefenseIAClient:
         self._dollar_signature: str | None = None
         self._keep_alive_task: asyncio.Task[None] | None = None
         self._auth_lock = asyncio.Lock()
+        # Cache nome (lower) -> orgCode obtido via varredura de pessoas. Como
+        # não existe endpoint listador de orgs neste servidor, evitamos pagar
+        # o custo da varredura a cada webhook usando TTL.
+        self._person_orgs_cache: dict[str, str] | None = None
+        self._person_orgs_cache_at: float = 0.0
+        self._person_orgs_lock = asyncio.Lock()
 
     @property
     def token(self) -> str | None:
@@ -185,26 +205,294 @@ class DefenseIAClient:
         self._raise_for_response(response)
         keep_alive_logger.debug("[KEEP_ALIVE] ok status=%d", response.status_code)
 
-    async def sync_person(self, payload: SyncRequest) -> dict[str, Any]:
+    async def sync_person(
+        self, payload: SyncRequest, org_code: str | None = None
+    ) -> dict[str, Any]:
         if self.settings.enabled and not self._token:
             raise DefenseIANotReadyError("Defense IA não conectado")
-        return await self._send_person_with_relogin(payload)
+        return await self._send_person_with_relogin(payload, org_code)
 
-    async def _send_person_with_relogin(self, payload: SyncRequest) -> dict[str, Any]:
+    async def _send_person_with_relogin(
+        self, payload: SyncRequest, org_code: str | None
+    ) -> dict[str, Any]:
         if not self._token:
             await self.login()
 
-        response = await self._upsert_person_request(payload)
+        response = await self._upsert_person_request(payload, org_code)
         if response.status_code == 401:
             await self.login()
-            response = await self._upsert_person_request(payload)
+            response = await self._upsert_person_request(payload, org_code)
 
         self._raise_for_response(response)
         if not response.content:
             return {}
         return response.json()
 
-    async def _upsert_person_request(self, payload: SyncRequest) -> httpx.Response:
+    async def list_person_orgs(self, force_refresh: bool = False) -> dict[str, str]:
+        """Retorna {orgName_lower: orgCode} das sub-organizações do Defense IA.
+
+        Como o servidor da Unimed não expõe endpoint listador de orgs (todas as
+        rotas /org/list, /org/tree, /department/* documentadas retornam 404),
+        a única fonte confiável é varrer todas as pessoas e coletar o par
+        (orgCode, orgName) que aparece em baseInfo. O resultado é cacheado em
+        memória com TTL para evitar paginar 70+ páginas a cada webhook.
+        """
+        now = time.time()
+        if (
+            not force_refresh
+            and self._person_orgs_cache is not None
+            and (now - self._person_orgs_cache_at) < PERSON_ORGS_CACHE_TTL_SECONDS
+        ):
+            return self._person_orgs_cache
+
+        async with self._person_orgs_lock:
+            now = time.time()
+            if (
+                not force_refresh
+                and self._person_orgs_cache is not None
+                and (now - self._person_orgs_cache_at) < PERSON_ORGS_CACHE_TTL_SECONDS
+            ):
+                return self._person_orgs_cache
+
+            if not self._token:
+                await self.login()
+
+            orgs: dict[str, str] = {}
+            page = 1
+            while True:
+                response = await self._request(
+                    "GET",
+                    BRMS_PERSON_PAGE,
+                    headers=self._auth_headers(),
+                    params={
+                        "page": page,
+                        "pageSize": PERSON_ORGS_PAGE_SIZE,
+                        "orgCode": self.settings.org_code or "001",
+                        "containChild": "1",
+                    },
+                )
+                if response.status_code == 401:
+                    await self.login()
+                    response = await self._request(
+                        "GET",
+                        BRMS_PERSON_PAGE,
+                        headers=self._auth_headers(),
+                        params={
+                            "page": page,
+                            "pageSize": PERSON_ORGS_PAGE_SIZE,
+                            "orgCode": self.settings.org_code or "001",
+                            "containChild": "1",
+                        },
+                    )
+                if not response.is_success:
+                    raise DefenseIAError(
+                        f"Falha ao listar sub-orgs (HTTP {response.status_code})"
+                    )
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise DefenseIAError(
+                        "Resposta inválida ao listar sub-orgs do Defense IA"
+                    ) from exc
+                data = body.get("data") or {}
+                people = data.get("pageData") or []
+                if not isinstance(people, list) or not people:
+                    break
+                for entry in people:
+                    base = entry.get("baseInfo") if isinstance(entry, dict) else None
+                    if not isinstance(base, dict):
+                        continue
+                    code = base.get("orgCode")
+                    name = base.get("orgName")
+                    if not code or not name:
+                        continue
+                    key = str(name).strip().lower()
+                    if key and key not in orgs:
+                        orgs[key] = str(code)
+                if len(people) < PERSON_ORGS_PAGE_SIZE:
+                    break
+                page += 1
+
+            self._person_orgs_cache = orgs
+            self._person_orgs_cache_at = time.time()
+            logger.info(
+                "[DEFENSE_IA] cache de sub-orgs atualizado: %d entrada(s)",
+                len(orgs),
+            )
+            return orgs
+
+    async def resolve_org_code(self, name: str | None) -> str | None:
+        """Resolve o orgCode no Defense IA a partir do `reguiredName` do BioDoc.
+
+        Aceita dois formatos:
+
+        1. Código direto (apenas dígitos, ex.: `"001015001"`): retorna como
+           está, sem chamar a API. Esta é a forma recomendada para evitar a
+           paginação completa de pessoas (~3 min no servidor da Unimed).
+        2. Nome amigável (ex.: `"Corb"`): faz lookup case-insensitive no
+           cache de sub-orgs (preenchido na 1ª chamada com varredura completa,
+           válido por PERSON_ORGS_CACHE_TTL_SECONDS).
+
+        Em caso de miss no cache, **não** força re-varredura para evitar
+        sobrecarga em rajadas de webhooks com nomes desconhecidos. Para
+        capturar sub-orgs criadas após o boot, use
+        `await client.list_person_orgs(force_refresh=True)` (ou rode o
+        script `scripts/list_person_orgs.py --refresh`).
+
+        Retorna `None` se o nome for vazio ou não casar com nenhuma sub-org —
+        o chamador decide o fallback.
+        """
+        if not name:
+            return None
+        key = name.strip()
+        if not key:
+            return None
+        # Atalho: se o painel BioDoc estiver configurado com o orgCode direto,
+        # economizamos a varredura completa de pessoas.
+        if key.isdigit():
+            return key
+        orgs = await self.list_person_orgs()
+        return orgs.get(key.lower())
+
+    async def sync_visitor(
+        self, payload: SyncRequest, entrance_ids: list[str]
+    ) -> dict[str, Any]:
+        """Upsert de visitante no Defense IA 3.x (BRMS). Trata re-login em 401."""
+        if self.settings.enabled and not self._token:
+            raise DefenseIANotReadyError("Defense IA não conectado")
+        return await self._send_visitor_with_relogin(payload, entrance_ids)
+
+    async def _send_visitor_with_relogin(
+        self, payload: SyncRequest, entrance_ids: list[str]
+    ) -> dict[str, Any]:
+        if not self._token:
+            await self.login()
+
+        response = await self._upsert_visitor_request(payload, entrance_ids)
+        if response.status_code == 401:
+            await self.login()
+            response = await self._upsert_visitor_request(payload, entrance_ids)
+
+        self._raise_for_response(response)
+        if not response.content:
+            return {}
+        return response.json()
+
+    async def _upsert_visitor_request(
+        self, payload: SyncRequest, entrance_ids: list[str]
+    ) -> httpx.Response:
+        # O Defense IA gera visitorId automaticamente; cada evento BioDoc = nova visita.
+        headers = self._auth_headers()
+        visitor_payload = self.build_visitor_payload(payload, entrance_ids=entrance_ids)
+        logger.debug(
+            "[DEFENSE_IA OUT] method=POST url=%s payload=%s",
+            BRMS_VISITOR,
+            self._sanitize_payload_for_log(visitor_payload),
+        )
+        response = await self._request(
+            "POST", BRMS_VISITOR, json=visitor_payload, headers=headers
+        )
+        logger.debug(
+            "[DEFENSE_IA IN] method=POST url=%s status=%d body=%s",
+            BRMS_VISITOR,
+            response.status_code,
+            response.text[:500],
+        )
+        return response
+
+    async def _fetch_brms_visitor(self, visitor_id: str) -> dict[str, Any] | None:
+        response = await self._request(
+            "GET",
+            brms_visitor_path(visitor_id),
+            headers=self._auth_headers(),
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code == 401:
+            raise DefenseIAUnauthorizedError("Token do Defense IA recusado")
+        if response.status_code >= 500:
+            raise DefenseIAUnavailableError("API do Defense IA indisponível")
+        if not response.is_success:
+            return None
+        if not response.content:
+            return {}
+        try:
+            body = response.json()
+        except ValueError:
+            return {}
+        if not isinstance(body, dict):
+            return {}
+        code = body.get("code")
+        if code in (404, "404", 1004, "1004"):
+            return None
+        desc = str(body.get("desc") or body.get("message") or "").lower()
+        if "not exist" in desc or "not found" in desc or "nao exist" in desc:
+            return None
+        if code in (None, 0, "0", 1000, "1000"):
+            return body
+        return None
+
+    @staticmethod
+    def _extract_visitor_face_pictures(visitor_body: dict[str, Any]) -> list[str]:
+        node = visitor_body.get("data", visitor_body)
+        if not isinstance(node, dict):
+            node = visitor_body
+        auth = node.get("authInfo")
+        if not isinstance(auth, dict):
+            return []
+        faces = auth.get("facePictures") or auth.get("facePicture") or []
+        if isinstance(faces, str):
+            return [faces] if faces else []
+        if isinstance(faces, list):
+            return [str(f) for f in faces if f]
+        return []
+
+    def build_visitor_payload(
+        self,
+        payload: SyncRequest,
+        *,
+        entrance_ids: list[str],
+        existing_face_pictures: list[str] | None = None,
+    ) -> dict[str, Any]:
+        face = self._resolve_face_base64(payload)
+        if face:
+            face_pictures: list[str] = [face]
+        elif existing_face_pictures is not None:
+            face_pictures = list(existing_face_pictures)
+        else:
+            face_pictures = []
+
+        now = int(time.time())
+        # acsChannelIds usa formato "channelId$type$0$0" (ex.: "1000032$7$0$0")
+        acs_channel_ids = entrance_ids
+
+        body: dict[str, Any] = {
+            "visitorName": payload.person.full_name,
+            "idType": "0",
+            "idNum": payload.person.document or None,
+            "arrivalTime": str(now),
+            "expectLeaveTime": str(now + 86400 * 365 * 10),
+            "reason": "",
+            "remark": payload.external_id,
+            "plateNo": "",
+            "authInfo": {
+                "facePictures": face_pictures,
+            },
+            "rightInfo": {
+                "acsChannelIds": acs_channel_ids,
+                "vtoChannelIds": [],
+                "positionIds": [],
+                "liftChannels": [],
+            },
+        }
+        # visitedPersonId é obrigatório — ID do usuário receptor no Defense IA
+        if self.settings.visited_person_id:
+            body["visitedPersonId"] = self.settings.visited_person_id
+        return body
+
+    async def _upsert_person_request(
+        self, payload: SyncRequest, org_code: str | None
+    ) -> httpx.Response:
         headers = self._auth_headers()
         if self.settings.is_brms:
             person_id = payload.external_id
@@ -217,6 +505,7 @@ class DefenseIAClient:
                 person_payload = self.build_person_payload(
                     payload,
                     existing_face_pictures=preserve_faces,
+                    org_code=org_code,
                 )
                 url = brms_person_path(person_id)
                 logger.debug(
@@ -232,7 +521,7 @@ class DefenseIAClient:
                     response.text[:500],
                 )
                 return response
-            person_payload = self.build_person_payload(payload)
+            person_payload = self.build_person_payload(payload, org_code=org_code)
             logger.debug(
                 "[DEFENSE_IA OUT] method=POST url=%s payload=%s",
                 BRMS_PERSON,
@@ -246,7 +535,7 @@ class DefenseIAClient:
                 response.text[:500],
             )
             return response
-        person_payload = self.build_person_payload(payload)
+        person_payload = self.build_person_payload(payload, org_code=org_code)
         url = f"/OBMS/accessControl/person/{payload.external_id}"
         logger.debug(
             "[DEFENSE_IA OUT] method=PUT url=%s payload=%s",
@@ -325,6 +614,7 @@ class DefenseIAClient:
         payload: SyncRequest,
         *,
         existing_face_pictures: list[str] | None = None,
+        org_code: str | None = None,
     ) -> dict[str, Any]:
         face = self._resolve_face_base64(payload)
         if face:
@@ -334,6 +624,13 @@ class DefenseIAClient:
         else:
             face_pictures = []
 
+        # `orgCode` decide a sub-organização da pessoa no painel Defense IA;
+        # cada sub-org já tem portas vinculadas no painel desktop, então o
+        # acesso a portas é gerenciado por essa associação (não por
+        # accessGroupIds, que este servidor ignora silenciosamente).
+        candidate = (org_code or "").strip()
+        resolved_org_code = candidate or self.settings.org_code or "001"
+
         if self.settings.is_brms:
             return {
                 "baseInfo": {
@@ -341,7 +638,7 @@ class DefenseIAClient:
                     "lastName": "",
                     "firstName": payload.person.full_name,
                     "gender": "0",
-                    "orgCode": self.settings.org_code,
+                    "orgCode": resolved_org_code,
                     "source": "0",
                     "facePictures": face_pictures,
                 },
@@ -362,8 +659,6 @@ class DefenseIAClient:
                     "accessType": "0",
                     "guestUseTimes": "0",
                     "allowLoginDevice": "0",
-                    "enableAccessGroup": "0",
-                    "accessGroupIds": [],
                 },
                 "faceComparisonInfo": {
                     "enableFaceComparisonGroup": "0",

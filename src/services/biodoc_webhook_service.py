@@ -2,7 +2,7 @@
 Orquestrador do fluxo de webhook BioDoc → Defense IA.
 
 Recebe o payload do evento BioDoc, enriquece os dados via API BioDoc,
-constrói o SyncRequest e chama o cliente Intelbras.
+constrói o SyncRequest e chama o cliente Intelbras (cadastro como ACS person).
 """
 
 from __future__ import annotations
@@ -16,10 +16,17 @@ from src.services.biodoc_client import (
     BiodocAPIUnavailableError,
     BiodocAPIUnauthorizedError,
     BiodocClient,
+    IntegrationLogData,
 )
 from src.services.biodoc_image import ImageDownloadError, download_image_as_base64
-from src.services.defense_ia_client import DefenseIAClient
-from src.services.defense_sync import sync_to_defense
+from src.services.defense_ia_client import (
+    DefenseIAArgumentError,
+    DefenseIAClient,
+    DefenseIAError,
+    DefenseIANotReadyError,
+    DefenseIAUnavailableError,
+    defense_error_detail_public,
+)
 
 
 async def process_biodoc_webhook(
@@ -29,11 +36,13 @@ async def process_biodoc_webhook(
 ) -> dict:
     """
     Fluxo completo:
-    1. Valida sucesso e presença do card
-    2. Consulta API BioDoc para obter nome e imagem
-    3. Baixa imagem da URL → base64
-    4. Faz upsert no Defense IA
-    5. Retorna resposta
+    1. Valida sucesso e presença do LogID
+    2. Consulta API BioDoc /integrations/log/{LogID} para obter id_Card, nome, imagem e status
+    3. Verifica se beneficiário está ativo (status 1 ou 2)
+    4. Baixa imagem da URL → base64
+    5. Resolve `reguiredName` -> `orgCode` no Defense IA (sub-organização)
+    6. Faz upsert no Defense IA usando id_Card como external_id
+    7. Retorna resposta
     """
     log_id = payload.LogID or "?"
 
@@ -47,17 +56,16 @@ async def process_biodoc_webhook(
             detail="Cadastro BioDoc não concluído com sucesso (success=false)",
         )
 
-    card = payload.card
-    if not card:
-        logger.warning("[WEBHOOK] LogID=%s card ausente no payload", log_id)
+    if not payload.LogID:
+        logger.warning("[WEBHOOK] LogID ausente no payload")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Campo 'card' ausente no payload do webhook",
+            detail="Campo 'LogID' ausente no payload do webhook",
         )
 
-    # Consulta API BioDoc para obter nome/imagem/status do beneficiário
+    # Consulta API BioDoc pelo LogID para obter dados completos da interação
     try:
-        biodoc_data = await biodoc_client.get_card_mainimage(card)
+        log_data: IntegrationLogData = await biodoc_client.get_integration_log(payload.LogID)
     except BiodocAPIUnauthorizedError as exc:
         logger.error("[WEBHOOK] LogID=%s BIODOC_TOKEN_API inválido: %s", log_id, exc)
         raise HTTPException(
@@ -71,19 +79,20 @@ async def process_biodoc_webhook(
             detail="API BioDoc indisponível — tente novamente",
         ) from exc
 
-    if not biodoc_data.status:
+    if log_data.status not in (1, 2):
         logger.warning(
-            "[WEBHOOK] LogID=%s beneficiário card=%s inativo no BioDoc, ignorando",
+            "[WEBHOOK] LogID=%s beneficiário id_Card=%s inativo no BioDoc (status=%d), ignorando",
             log_id,
-            card,
+            log_data.id_card,
+            log_data.status,
         )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Beneficiário inativo no BioDoc (status=false)",
+            detail=f"Beneficiário inativo no BioDoc (status={log_data.status})",
         )
 
-    # Prioriza a URL da API; fallback para URL do webhook
-    image_url = biodoc_data.image or payload.image
+    # Prioriza mainImage; fallback para path e depois URL do webhook
+    image_url = log_data.main_image or log_data.path or payload.image
     if not image_url:
         logger.warning("[WEBHOOK] LogID=%s sem URL de imagem disponível", log_id)
         raise HTTPException(
@@ -100,7 +109,8 @@ async def process_biodoc_webhook(
             detail=f"Falha ao baixar imagem do beneficiário: {exc}",
         ) from exc
 
-    name = biodoc_data.name or card
+    card = log_data.id_card
+    name = log_data.name or card
 
     sync_request = SyncRequest(
         source="biodoc",
@@ -110,21 +120,76 @@ async def process_biodoc_webhook(
         biometrics=BiometricData(face_image_base64=face_b64),
     )
 
+    if defense_client.settings.enabled and not defense_client.is_ready:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Defense IA não conectado",
+        )
+
+    # Mapeia o nome amigável vindo do BioDoc (ex.: "Corb") para o `orgCode`
+    # da sub-organização equivalente no Defense IA (ex.: "001015001"). Se o
+    # nome não for encontrado, usamos o orgCode raiz configurado no .env
+    # (DEFENSE_IA_ORG_CODE) — assim a pessoa entra ao menos no nó pai.
+    resolved_org_code: str | None = None
+    if log_data.required_name:
+        try:
+            resolved_org_code = await defense_client.resolve_org_code(log_data.required_name)
+        except DefenseIAError as exc:
+            logger.warning(
+                "[WEBHOOK] LogID=%s falha ao resolver orgCode para %r: %s — usando default",
+                log_id,
+                log_data.required_name,
+                exc,
+            )
+    if not resolved_org_code:
+        resolved_org_code = defense_client.settings.org_code or "001"
+        if log_data.required_name:
+            logger.warning(
+                "[WEBHOOK] LogID=%s reguiredName=%r sem sub-org correspondente, usando %s",
+                log_id,
+                log_data.required_name,
+                resolved_org_code,
+            )
     logger.debug(
-        "[WEBHOOK] LogID=%s card=%s name=%s → Defense IA upsert",
+        "[WEBHOOK] LogID=%s id_Card=%s empresa=%r org_code=%s",
         log_id,
         card,
-        name,
+        log_data.required_name,
+        resolved_org_code,
     )
 
-    await sync_to_defense(
-        sync_request,
-        defense_client,
-        log_context=f"[WEBHOOK] LogID={log_id}",
-    )
+    try:
+        await defense_client.sync_person(sync_request, resolved_org_code)
+    except DefenseIAArgumentError as exc:
+        logger.warning(
+            "[WEBHOOK] LogID=%s imagem inválida para id_Card=%s: %s",
+            log_id,
+            card,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Biometria inválida: imagem facial não reconhecida pelo Defense IA",
+        ) from exc
+    except DefenseIANotReadyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except (DefenseIAUnavailableError, DefenseIAError) as exc:
+        logger.exception(
+            "[WEBHOOK] LogID=%s falha ao sincronizar id_Card=%s: %s",
+            log_id,
+            card,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=defense_error_detail_public(exc),
+        ) from exc
 
     logger.info(
-        "[WEBHOOK] LogID=%s card=%s name=%s sincronizado com sucesso no Defense IA",
+        "[WEBHOOK] LogID=%s id_Card=%s name=%s cadastrado no Defense IA (ACS person)",
         log_id,
         card,
         name,

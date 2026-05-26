@@ -31,6 +31,7 @@ def build_defense_client_from_env() -> DefenseIAClient:
             os.getenv("DEFENSE_IA_KEEP_ALIVE_SECONDS", "20")
         ),
         timeout_seconds=float(os.getenv("DEFENSE_IA_TIMEOUT_SECONDS", "10")),
+        visited_person_id=os.getenv("DEFENSE_IA_VISITED_PERSON_ID", ""),
     )
     return DefenseIAClient(settings=settings)
 
