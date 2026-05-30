@@ -200,23 +200,15 @@ O middleware resolve orgCode via `GET /integrations/log/{reference_Id}` usando
 
 Se external-audits ou integrations/log falhar, o sync continua com `orgCode` fallback (`001`).
 
-No sandbox BioDoc, a URL verify usa **dois `url=`**: o 1º abre no browser (BioDoc);
-o **2º dispara POST** no middleware — é esse POST que sincroniza o Defense IA
-(`card` + `image` do liveness). O middleware **não** implementa rota `/redirect`.
+Alternativa preferencial (quando o BioDoc inclui o ID no callback): use callback **`url`** (redirect)
+em vez de `urlWebhook`, apontando para `/webhook/biodoc/redirect` — o BioDoc
+inclui `reference_Id` na query do redirect e o fluxo `integrations/log` funciona direto.
 
-Exemplo verify (sandbox, operador VIVER):
+Exemplo de URL verify (sandbox, Colaboradores, **sem** parâmetros no webhook):
 
 ```
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=<TOKEN>&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc/redirect&url=https://homologa.wolfx.com.br/webhook/biodoc
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22colaboradores%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc/redirect
 ```
-
-| Ordem | Parâmetro | Destino | Papel |
-|-------|-----------|---------|-------|
-| 1º `url` | GET browser | `/webhook/biodoc/redirect` | Callback BioDoc no navegador (fora do middleware) |
-| 2º `url` | POST servidor | `/webhook/biodoc` | **Sync Defense** com foto do liveness |
-
-Validação: após verify, o log deve mostrar `POST /webhook/biodoc ← 52.5.95.105`
-e `sync concluído no Defense IA`.
 
 Ou, se precisar manter urlWebhook, peça ao suporte BioDoc para incluir `logId` no
 body do POST (junto com `card` e `image`).
@@ -277,6 +269,7 @@ Identificadores aceitos no POST do webhook:
 **Sem identificador no POST:** fallback automático via
 `GET /logs/external-audits` + `GET /integrations/log/{id}` (ver seção 3 acima).
 Limitação: correlação por janela de tempo — várias verifies do mesmo cartão no
+intervalo podem associar log incorreto; preferível redirect com `reference_Id`
 ou BioDoc incluir `logId` no body do urlWebhook.
 
 Se `status` não for **1** ou **2** (ativo), o middleware responde **422** e **não** envia ao Defense.
@@ -418,24 +411,3 @@ Corpo de sucesso:
 3. Publicar middleware em URL HTTPS de produção.
 4. Garantir Defense acessível e `connected: true` no `/status`.
 5. Testar um cadastro real no sandbox; depois repetir em produção com um beneficiário piloto.
-
-### URL verify (homolog — uma linha)
-
-Formato aceito pelo BioDoc sandbox: **dois `url=`** (redirect + webhook) e **`token` por último**:
-
-```
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc/redirect&url=https://homologa.wolfx.com.br/webhook/biodoc&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==
-
-
-```
-
-| Ordem | Parâmetro | Valor |
-|-------|-----------|--------|
-| 1º `url` | GET browser | `https://homologa.wolfx.com.br/webhook/biodoc/redirect` (BioDoc; middleware não expõe esta rota) |
-| 2º `url` | POST servidor | `https://homologa.wolfx.com.br/webhook/biodoc` → **sync Defense** |
-| último | `token` | TOKEN_API do painel BioDoc |
-
-O sync no Defense IA ocorre **somente** no POST do 2º `url`. Confirme no log:
-`POST /webhook/biodoc ← 52.5.95.105` e `sync concluído no Defense IA`.
-
-Gerar: `python3 scripts/print_biodoc_verify_url.py`
