@@ -7,7 +7,6 @@ constrói o SyncRequest e chama o cliente Intelbras (cadastro como ACS person).
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -15,6 +14,7 @@ from fastapi import HTTPException, status
 from src.api.schemas import BiometricData, PersonData, SyncRequest
 from src.api.schemas_biodoc import BiodocWebhookPayload
 from src.core.logging import logger
+from src.core.webhook_log import format_flow_step
 from src.services.biodoc_client import (
     BiodocAPIUnavailableError,
     BiodocAPIUnauthorizedError,
@@ -34,6 +34,12 @@ from src.services.defense_ia_client import (
 )
 
 AUDIT_LOOKUP_WINDOW_MINUTES = 15
+
+
+def webhook_event_succeeded(payload: BiodocWebhookPayload) -> bool:
+    """True somente quando BioDoc indica verify/cadastro bem-sucedido."""
+    response_ok = payload.response is None or (200 <= payload.response < 300)
+    return bool(payload.success and response_ok)
 
 
 def _parse_event_datetime(event_date: str | None) -> datetime | None:
@@ -98,7 +104,7 @@ def _pick_best_audit_entry(
 
 
 def _log_has_group_hints(log_data: IntegrationLogData) -> bool:
-    return bool(log_data.operador or log_data.local_token or log_data.required_name)
+    return bool(log_data.local_token or log_data.required_name)
 
 
 async def _resolve_log_via_external_audits(
@@ -120,7 +126,7 @@ async def _resolve_log_via_external_audits(
         )
     except (BiodocAPIUnauthorizedError, BiodocAPIUnavailableError) as exc:
         logger.warning(
-            "[WEBHOOK] card=%s external-audits indisponível (%s) — operador via fallback",
+            "[WEBHOOK] card=%s external-audits indisponível (%s) — local_token via fallback",
             card,
             exc,
         )
@@ -132,25 +138,30 @@ async def _resolve_log_via_external_audits(
     best = _pick_best_audit_entry(entries, event_date)
     if best is None or best.id is None:
         logger.info(
-            "[WEBHOOK] card=%s external-audits sem entradas (janela %s..%s)",
-            card,
-            initial_date,
-            end_date,
+            format_flow_step(
+                "external-audits sem entradas",
+                card=card,
+                janela=f"{initial_date} .. {end_date}",
+                event_date=event_date,
+            )
         )
         return None
 
     ref_id = str(best.id)
     logger.info(
-        "[WEBHOOK] card=%s external-audits escolheu id=%s date=%r",
-        card,
-        ref_id,
-        best.date,
+        format_flow_step(
+            "external-audits escolheu log",
+            card=card,
+            audit_id=ref_id,
+            audit_date=best.date,
+            audit_status=best.status,
+        )
     )
     try:
         log_data = await biodoc_client.get_integration_log(ref_id)
     except (BiodocAPIUnauthorizedError, BiodocAPIUnavailableError) as exc:
         logger.warning(
-            "[WEBHOOK] card=%s GET /integrations/log/%s falhou (%s) — operador via fallback",
+            "[WEBHOOK] card=%s GET /integrations/log/%s falhou (%s) — local_token via fallback",
             card,
             ref_id,
             exc,
@@ -159,18 +170,20 @@ async def _resolve_log_via_external_audits(
 
     if not _log_has_group_hints(log_data):
         logger.warning(
-            "[WEBHOOK] card=%s log id=%s sem operador/local_token/requiredName",
+            "[WEBHOOK] card=%s log id=%s sem local_token/requiredName",
             card,
             ref_id,
         )
         return None
 
     logger.info(
-        "[WEBHOOK] card=%s operador via external-audits+log: operador=%r localToken=%r requiredName=%r",
-        card,
-        log_data.operador,
-        log_data.local_token,
-        log_data.required_name,
+        format_flow_step(
+            "local_token resolvido (external-audits → integrations/log)",
+            card=card,
+            audit_id=ref_id,
+            local_token=log_data.local_token,
+            required_name=log_data.required_name,
+        )
     )
     return log_data
 
@@ -183,38 +196,6 @@ def _effective_reference_id(payload: BiodocWebhookPayload) -> str | None:
         return payload.logId.strip()
     if payload.id_Log is not None:
         return str(payload.id_Log)
-    return None
-
-
-def _extract_operador_from_details(payload: BiodocWebhookPayload) -> str | None:
-    """Fallback: operador em `details` do POST (quando BioDoc repassa o parâmetro da verify)."""
-    details = payload.details
-    if details is None:
-        return None
-
-    if isinstance(details, dict):
-        raw = details.get("operador") or details.get("operator") or details.get("grupo")
-        if raw is None:
-            return None
-        value = str(raw).strip()
-        return value or None
-
-    if isinstance(details, str):
-        text = details.strip()
-        if not text:
-            return None
-        try:
-            parsed = json.loads(text)
-        except ValueError:
-            return None
-        if not isinstance(parsed, dict):
-            return None
-        raw = parsed.get("operador") or parsed.get("operator") or parsed.get("grupo")
-        if raw is None:
-            return None
-        value = str(raw).strip()
-        return value or None
-
     return None
 
 
@@ -239,12 +220,11 @@ async def _resolve_group_org_code(
     *,
     ref_label: str,
     defense_client: DefenseIAClient,
-    operador: str | None = None,
     local_token: str | None = None,
     required_name: str | None = None,
 ) -> tuple[str, list[str], str | None]:
-    """Resolve orgCode tentando operador → local_token → requiredName → default."""
-    candidates = _unique_group_candidates(operador, local_token, required_name)
+    """Resolve orgCode tentando local_token → requiredName → default."""
+    candidates = _unique_group_candidates(local_token, required_name)
     resolved_org_code: str | None = None
     matched_source: str | None = None
 
@@ -266,26 +246,32 @@ async def _resolve_group_org_code(
 
     if resolved_org_code and matched_source:
         logger.info(
-            "[WEBHOOK] ref=%s grupo candidatos=%s orgCode=%s fonte=%r",
-            ref_label,
-            candidates,
-            resolved_org_code,
-            matched_source,
+            format_flow_step(
+                "orgCode resolvido",
+                ref=ref_label,
+                candidatos=candidates,
+                orgCode=resolved_org_code,
+                fonte=matched_source,
+            )
         )
     elif candidates:
         resolved_org_code = defense_client.settings.org_code or "001"
         logger.warning(
-            "[WEBHOOK] ref=%s grupo candidatos=%s orgCode=%s fonte=fallback (grupo não encontrado no Defense)",
-            ref_label,
-            candidates,
-            resolved_org_code,
+            format_flow_step(
+                "orgCode fallback (grupo não encontrado no Defense)",
+                ref=ref_label,
+                candidatos=candidates,
+                orgCode=resolved_org_code,
+            )
         )
     else:
         resolved_org_code = defense_client.settings.org_code or "001"
         logger.warning(
-            "[WEBHOOK] ref=%s grupo candidatos=[] orgCode=%s fonte=fallback (sem operador/local_token/requiredName)",
-            ref_label,
-            resolved_org_code,
+            format_flow_step(
+                "orgCode fallback (sem local_token/requiredName)",
+                ref=ref_label,
+                orgCode=resolved_org_code,
+            )
         )
 
     return resolved_org_code, candidates, matched_source
@@ -309,16 +295,20 @@ async def process_biodoc_webhook(
     """
     # --- 1. Verificar sucesso ---
     # BioDoc exige sempre 200 OK; retornar 4xx/5xx faz o BioDoc parar de enviar.
-    # Para eventos sem sucesso apenas logamos e retornamos status "ignored".
-    response_ok = payload.response is None or (200 <= payload.response < 300)
-    if not payload.success or not response_ok:
+    # Falhas (success=false ou response 403/4xx) não vão ao Defense — só log + ignored.
+    if not webhook_event_succeeded(payload):
         label = payload.reference_Id or payload.logId or payload.card or "?"
         logger.warning(
-            "[WEBHOOK] ref=%s verificação BioDoc sem sucesso (success=%s response=%s code=%s) — ignorando sem erro",
-            label,
-            payload.success,
-            payload.response,
-            payload.code,
+            format_flow_step(
+                "verify falhou — Defense NÃO acionado",
+                ref=label,
+                card=payload.card,
+                success=payload.success,
+                response=payload.response,
+                code=payload.code,
+                logId=payload.logId,
+                defense_sync="skipped",
+            )
         )
         return {
             "status": "ignored",
@@ -392,25 +382,11 @@ async def _process_by_reference_id(
             detail="API BioDoc indisponível — tente novamente",
         ) from exc
 
-    effective_operador = log_data.operador or _extract_operador_from_details(payload)
-    if effective_operador and log_data.operador:
-        logger.info(
-            "[WEBHOOK] ref=%s operador identificado no log BioDoc: %s",
-            effective_ref_id,
-            effective_operador,
-        )
-    elif effective_operador:
-        logger.info(
-            "[WEBHOOK] ref=%s operador via details do POST (log sem detail): %s",
-            effective_ref_id,
-            effective_operador,
-        )
     logger.info(
-        "[WEBHOOK] ref=%s log resumo id_Card=%s name=%s operador=%s localToken=%r requiredName=%r status=%d",
+        "[WEBHOOK] ref=%s log resumo id_Card=%s name=%s localToken=%r requiredName=%r status=%d",
         effective_ref_id,
         log_data.id_card,
         log_data.name,
-        effective_operador,
         log_data.local_token,
         log_data.required_name,
         log_data.status,
@@ -460,7 +436,6 @@ async def _process_by_reference_id(
         name=name,
         face_b64=face_b64,
         required_name=log_data.required_name,
-        operador=effective_operador,
         local_token=log_data.local_token,
         defense_client=defense_client,
     )
@@ -507,7 +482,6 @@ async def _process_card_with_payload_image(
     payload_name = payload.name.strip() if payload.name and payload.name.strip() else None
     name = payload_name or card_data.name or card
 
-    operador: str | None = None
     local_token: str | None = None
     required_name: str | None = None
     if not _effective_reference_id(payload):
@@ -517,21 +491,20 @@ async def _process_card_with_payload_image(
             biodoc_client,
         )
         if audit_log:
-            operador = audit_log.operador
             local_token = audit_log.local_token
             required_name = audit_log.required_name
         else:
             logger.warning(
                 "[WEBHOOK] card=%s sem reference_Id/logId/id_Log e external-audits "
-                "não resolveu operador — orgCode via fallback",
+                "não resolveu local_token — orgCode via fallback",
                 card,
             )
 
     logger.info(
-        "[WEBHOOK] card:%s resumo name=%s operador=%s (image do payload, nome via mainimage)",
+        "[WEBHOOK] card:%s resumo name=%s localToken=%r (image do payload, nome via mainimage)",
         card,
         name,
-        operador,
+        local_token,
     )
 
     try:
@@ -554,7 +527,6 @@ async def _process_card_with_payload_image(
         name=name,
         face_b64=face_b64,
         required_name=required_name,
-        operador=operador,
         local_token=local_token,
         defense_client=defense_client,
     )
@@ -567,7 +539,6 @@ async def _sync_to_defense(
     name: str,
     face_b64: str,
     required_name: str | None,
-    operador: str | None,
     defense_client: DefenseIAClient,
     local_token: str | None = None,
 ) -> dict:
@@ -588,7 +559,6 @@ async def _sync_to_defense(
     resolved_org_code, _, _ = await _resolve_group_org_code(
         ref_label=ref_label,
         defense_client=defense_client,
-        operador=operador,
         local_token=local_token,
         required_name=required_name,
     )
@@ -624,11 +594,13 @@ async def _sync_to_defense(
         ) from exc
 
     logger.info(
-        "[WEBHOOK] ref=%s id_Card=%s name=%s orgCode=%s cadastrado no Defense IA (ACS person)",
-        ref_label,
-        card,
-        name,
-        resolved_org_code,
+        format_flow_step(
+            "sync concluído no Defense IA",
+            ref=ref_label,
+            id_Card=card,
+            name=name,
+            orgCode=resolved_org_code,
+        )
     )
     return {
         "status": "success",
@@ -710,19 +682,17 @@ async def process_biodoc_webhook_by_card(
 
     name = card_data.name or card
 
-    operador: str | None = None
     local_token: str | None = None
     effective_required_name = required_name
     audit_log = await _resolve_log_via_external_audits(card, event_date, biodoc_client)
     if audit_log:
-        operador = audit_log.operador
         local_token = audit_log.local_token
         if effective_required_name is None:
             effective_required_name = audit_log.required_name
     elif effective_required_name is None:
         logger.warning(
             "[WEBHOOK] %s sem reference_Id/logId/id_Log e external-audits "
-            "não resolveu operador — orgCode via fallback",
+            "não resolveu local_token — orgCode via fallback",
             ref_label,
         )
 
@@ -732,7 +702,6 @@ async def process_biodoc_webhook_by_card(
         name=name,
         face_b64=face_b64,
         required_name=effective_required_name,
-        operador=operador,
         local_token=local_token,
         defense_client=defense_client,
     )

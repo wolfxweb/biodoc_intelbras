@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 
@@ -11,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from src.core.logging import logger
+from src.core.webhook_log import format_inbound_request, format_inbound_response
 
 _MAX_BODY_LOG_BYTES = 64_000
 _REDACTED_HEADERS = frozenset(
@@ -28,16 +28,6 @@ def _redact_query_string(query: str) -> str:
     return _SENSITIVE_QUERY.sub(r"\1\2=***REDACTED***", normalized)
 
 
-def _format_headers(request: Request) -> str:
-    safe: dict[str, str] = {}
-    for name, value in request.headers.items():
-        if name.lower() in _REDACTED_HEADERS:
-            safe[name] = "***REDACTED***"
-        else:
-            safe[name] = value
-    return json.dumps(safe, ensure_ascii=False)
-
-
 def _format_body_preview(raw: bytes) -> str:
     if not raw:
         return "<empty>"
@@ -50,8 +40,18 @@ def _format_body_preview(raw: bytes) -> str:
     return text + suffix
 
 
+def _format_headers(request: Request) -> dict[str, str]:
+    safe: dict[str, str] = {}
+    for name, value in request.headers.items():
+        if name.lower() in _REDACTED_HEADERS:
+            safe[name] = "***REDACTED***"
+        else:
+            safe[name] = value
+    return safe
+
+
 class WebhookAuditMiddleware(BaseHTTPMiddleware):
-    """Grava método, path, query, headers e body de qualquer hit em /webhook."""
+    """Grava método, path, query e body de qualquer hit em /webhook."""
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path
@@ -65,18 +65,18 @@ class WebhookAuditMiddleware(BaseHTTPMiddleware):
         )
         method = request.method
         query = _redact_query_string(request.url.query)
-        headers = _format_headers(request)
 
         body = await request.body()
 
         logger.info(
-            "[WEBHOOK IN] %s %s <- %s | query=%s | headers=%s | body=%s",
-            method,
-            path,
-            client,
-            query or "<empty>",
-            headers,
-            _format_body_preview(body),
+            format_inbound_request(
+                method=method,
+                path=path,
+                client=client,
+                query=query,
+                headers=_format_headers(request),
+                body_preview=_format_body_preview(body),
+            )
         )
 
         async def receive() -> dict:
@@ -86,10 +86,11 @@ class WebhookAuditMiddleware(BaseHTTPMiddleware):
         response = await call_next(replay_request)
 
         logger.info(
-            "[WEBHOOK IN] %s %s <- %s | status=%d",
-            method,
-            path,
-            client,
-            response.status_code,
+            format_inbound_response(
+                method=method,
+                path=path,
+                client=client,
+                status=response.status_code,
+            )
         )
         return response

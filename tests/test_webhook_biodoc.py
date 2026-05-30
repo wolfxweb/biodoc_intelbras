@@ -197,6 +197,43 @@ async def test_webhook_success_false_returns_ignored(webhook_client: WebhookFixt
     body = response.json()
     assert body["status"] == "ignored"
     assert body["defense_sync"] == "skipped"
+    webhook_client.defense_mock.sync_person.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_webhook_response_403_with_logid_skips_defense(monkeypatch: pytest.MonkeyPatch):
+    """Falha de comparação facial (403) não deve acionar Defense mesmo com logId."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = _make_biodoc_mock()
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    payload = {
+        "success": False,
+        "response": 403,
+        "code": "ERR_CRD_FACE_COMPARISON",
+        "message": "Falha ao comparar as faces. Verifique e tente novamente.",
+        "card": "00271368992672000",
+        "logId": "fb7aec8c-c72b-41c4-ae89-39543c7c1604",
+        "confidence": "0",
+        "date": "2026-05-30T14:43:21.201305562Z",
+    }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/webhook/biodoc", json=payload, headers=VALID_HEADERS)
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ignored"
+    assert body["defense_sync"] == "skipped"
+    biodoc_mock.get_integration_log.assert_not_awaited()
+    biodoc_mock.get_external_audits.assert_not_awaited()
+    defense_mock.sync_person.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -336,7 +373,8 @@ async def test_webhook_skips_resolve_when_required_name_missing(
 
 
 @pytest.mark.asyncio
-async def test_webhook_maps_org_code_from_details_operador(monkeypatch: pytest.MonkeyPatch):
+async def test_webhook_details_operador_is_ignored_for_orgcode(monkeypatch: pytest.MonkeyPatch):
+    """operador em details do POST não entra na resolução de orgCode."""
     monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
     defense_mock = _make_defense_mock(resolved_org_code="001015001")
     biodoc_mock = _make_biodoc_mock(required_name="EmpresaDesconhecida")
@@ -360,7 +398,7 @@ async def test_webhook_maps_org_code_from_details_operador(monkeypatch: pytest.M
     app.dependency_overrides.clear()
     assert response.status_code == 200
     assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001015001"
-    defense_mock.resolve_org_code.assert_awaited_once_with("VIVER")
+    defense_mock.resolve_org_code.assert_awaited_once_with("EmpresaDesconhecida")
 
 
 @pytest.mark.asyncio
@@ -765,64 +803,10 @@ async def test_webhook_card_image_uses_mainimage_name(monkeypatch: pytest.Monkey
 
 @pytest.mark.asyncio
 async def test_webhook_log_id_takes_priority_over_card_image(monkeypatch: pytest.MonkeyPatch):
-    """logId no payload deve usar /integrations/log (operador, nome completo)."""
+    """logId no payload deve usar /integrations/log (local_token, nome completo)."""
     monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
 
     defense_mock = _make_defense_mock()
-    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
-    biodoc_mock.get_integration_log.return_value = IntegrationLogData(
-        id="log-uuid",
-        id_card="00271368992672000",
-        name="CARLOS EDUARDO LOBO",
-        status=2,
-        main_image="https://example.com/face.jpg",
-        path=None,
-        required_name=None,
-        operador="VIVER",
-    )
-
-    app.dependency_overrides[get_defense_client] = lambda: defense_mock
-    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
-
-    payload = {
-        **NEW_FORMAT_PAYLOAD,
-        "logId": "log-uuid",
-    }
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        with patch(
-            "src.services.biodoc_webhook_service.download_image_as_base64",
-            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
-        ):
-            response = await client.post(
-                "/webhook/biodoc",
-                json=payload,
-                headers=VALID_HEADERS,
-            )
-
-    app.dependency_overrides.clear()
-    assert response.status_code == 200
-    biodoc_mock.get_integration_log.assert_awaited_once_with("log-uuid")
-    biodoc_mock.get_card_mainimage.assert_not_awaited()
-    defense_mock.resolve_org_code.assert_awaited_once_with("VIVER")
-
-
-@pytest.mark.asyncio
-async def test_webhook_local_token_fallback_when_operador_unmapped(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
-
-    async def resolve_side_effect(name: str | None) -> str | None:
-        if name == "VIVER":
-            return None
-        if name == "CHU - ESPAÇO VIVER BEM":
-            return "001002"
-        return None
-
-    defense_mock = _make_defense_mock()
-    defense_mock.resolve_org_code.side_effect = resolve_side_effect
     biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
     biodoc_mock.get_integration_log.return_value = IntegrationLogData(
         id="log-uuid",
@@ -858,7 +842,55 @@ async def test_webhook_local_token_fallback_when_operador_unmapped(
 
     app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert defense_mock.resolve_org_code.await_count == 2
+    biodoc_mock.get_integration_log.assert_awaited_once_with("log-uuid")
+    biodoc_mock.get_card_mainimage.assert_not_awaited()
+    defense_mock.resolve_org_code.assert_awaited_once_with("CHU - ESPAÇO VIVER BEM")
+
+
+@pytest.mark.asyncio
+async def test_webhook_uses_local_token_not_operador(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """orgCode usa local_token; operador no log é ignorado."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock(resolved_org_code="001002")
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+    biodoc_mock.get_integration_log.return_value = IntegrationLogData(
+        id="log-uuid",
+        id_card="00271368992672000",
+        name="CARLOS EDUARDO LOBO",
+        status=2,
+        main_image="https://example.com/face.jpg",
+        path=None,
+        required_name=None,
+        operador="VIVER",
+        local_token="CHU - ESPAÇO VIVER BEM",
+    )
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    payload = {
+        **NEW_FORMAT_PAYLOAD,
+        "logId": "log-uuid",
+    }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc",
+                json=payload,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    defense_mock.resolve_org_code.assert_awaited_once_with("CHU - ESPAÇO VIVER BEM")
     assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001002"
 
 
@@ -923,7 +955,7 @@ async def test_webhook_card_image_query_operador_ignored_and_warns_without_log_i
 
     app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert any("external-audits não resolveu operador" in r.message for r in caplog.records)
+    assert any("external-audits não resolveu local_token" in r.message for r in caplog.records)
     biodoc_mock.get_integration_log.assert_not_awaited()
     defense_mock.resolve_org_code.assert_not_awaited()
     assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001"
@@ -961,10 +993,10 @@ async def test_webhook_card_image_details_query_is_ignored(
 
 
 @pytest.mark.asyncio
-async def test_webhook_card_image_resolves_operador_via_external_audits(
+async def test_webhook_card_image_resolves_local_token_via_external_audits(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """card+image sem log id: external-audits → integrations/log resolve operador."""
+    """card+image sem log id: external-audits → integrations/log resolve local_token."""
     monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
 
     defense_mock = _make_defense_mock(resolved_org_code="001008")
@@ -990,6 +1022,7 @@ async def test_webhook_card_image_resolves_operador_via_external_audits(
         path=None,
         required_name=None,
         operador="colaboradores",
+        local_token="Colaboradores",
     )
 
     app.dependency_overrides[get_defense_client] = lambda: defense_mock
@@ -1016,7 +1049,7 @@ async def test_webhook_card_image_resolves_operador_via_external_audits(
     assert response.status_code == 200
     biodoc_mock.get_external_audits.assert_awaited_once()
     biodoc_mock.get_integration_log.assert_awaited_once_with("677")
-    defense_mock.resolve_org_code.assert_awaited_once_with("colaboradores")
+    defense_mock.resolve_org_code.assert_awaited_once_with("Colaboradores")
     assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001008"
 
 
@@ -1068,6 +1101,7 @@ async def test_webhook_id_log_uses_integration_log(monkeypatch: pytest.MonkeyPat
         path=None,
         required_name=None,
         operador="VIVER",
+        local_token="CHU - ESPAÇO VIVER BEM",
     )
 
     app.dependency_overrides[get_defense_client] = lambda: defense_mock
@@ -1091,4 +1125,4 @@ async def test_webhook_id_log_uses_integration_log(monkeypatch: pytest.MonkeyPat
     app.dependency_overrides.clear()
     assert response.status_code == 200
     biodoc_mock.get_integration_log.assert_awaited_once_with("42")
-    defense_mock.resolve_org_code.assert_awaited_once_with("VIVER")
+    defense_mock.resolve_org_code.assert_awaited_once_with("CHU - ESPAÇO VIVER BEM")

@@ -45,7 +45,7 @@ async def test_webhook_audit_logs_post_without_authorization(
     assert response.status_code != 401
     inbound = [r.message for r in caplog.records if "[WEBHOOK IN]" in r.message]
     assert any("POST /webhook/biodoc" in m for m in inbound)
-    assert any("body=" in m for m in inbound)
+    assert any("body:" in m for m in inbound)
     assert any("sem Authorization" in r.message for r in caplog.records)
 
 
@@ -69,4 +69,4 @@ async def test_webhook_audit_logs_invalid_token_returns_401(
     assert response.status_code == 401
     inbound = [r.message for r in caplog.records if "[WEBHOOK IN]" in r.message]
     assert any("POST /webhook/biodoc" in m for m in inbound)
-    assert any("status=401" in m for m in inbound)
+    assert any("HTTP 401" in m for m in inbound)

@@ -133,17 +133,19 @@ Se preferir digitar o nome em vez do código, também funciona:
 
 | Campo BioDoc | Valor | Resultado |
 |---|---|---|
-| `reguiredName` ou `detail.operador` (log) | `Corb` | Middleware busca o nome no cache de `person-group/list`, encontra `001015001`. |
-| `reguiredName` ou `detail.operador` | `corb` / `CORB` / `  Corb  ` | Mesma coisa (case-insensitive, trim). |
-| `reguiredName` ou `detail.operador` | `Colaboradores` | `orgCode=001008`. |
+| `json.Local Token` (log) ou `reguiredName` | `Corb` | Middleware busca o nome no cache de `person-group/list`, encontra `001015001`. |
+| `json.Local Token` ou `reguiredName` | `corb` / `CORB` / `  Corb  ` | Mesma coisa (case-insensitive, trim). |
+| `json.Local Token` ou `reguiredName` | `Colaboradores` | `orgCode=001008`. |
+| `json.Local Token` | `CHU - ESPAÇO VIVER BEM` | `orgCode=001021`. |
 
-O operador vem de `GET /integrations/log/{reference_Id}` (campo `detail`, JSON
-com `{"operador":"VIVER"}` repassado na URL verify como `details=...`). A URL
-do webhook (`urlWebhook`) **não** deve incluir `?operador=`.
+O **local_token** vem de `GET /integrations/log/{reference_Id}` (campo
+`json.Local Token` no log BioDoc). O `detail.operador` da URL verify **não**
+entra na resolução de orgCode. A URL do webhook (`urlWebhook`) **não** deve
+incluir `?operador=`.
 
 Quando o POST urlWebhook não traz `reference_Id`/`logId`/`id_Log`, o middleware
 consulta `GET /logs/external-audits?idCard=...` e em seguida
-`GET /integrations/log/{id}` para obter o mesmo `detail` (janela ±15 min).
+`GET /integrations/log/{id}` para obter `local_token` e `reguiredName` (janela ±15 min).
 
 > Lookup por nome consulta o cache de grupos (aquecido no boot via
 > `person-group/list`). Após criar nova sub-org no painel, rode
@@ -184,7 +186,7 @@ container.
 │                                        │
 │  a) GET /integrations/log/{reference_Id}│ ── busca dados completos no BioDoc
 │     -> retorna id_Card, reguiredName,   │
-│        detail (operador da URL verify)  │
+│        json.Local Token (local_token)   │
 │     (sem reference_Id: external-audits  │
 │      -> integrations/log/{id})          │
 │                                  │
@@ -354,7 +356,7 @@ painel desktop vinculou à sub-org `Corb`.
 
 | Sintoma | Causa provável | Solução |
 |---|---|---|
-| Pessoa entra em `001` (Unimed) em vez da sub-org esperada | `reguiredName`/`operador` em branco ou nome errado | Conferir cadastro; usar `scripts/list_person_orgs.py` para checar nomes válidos. |
+| Pessoa entra em `001` (Unimed) em vez da sub-org esperada | `local_token`/`reguiredName` em branco ou nome errado | Conferir log BioDoc (`json.Local Token`); usar `scripts/list_person_orgs.py` para checar nomes válidos. |
 | Nome de grupo não resolve após boot | Cache frio ou grupo criado após boot | Aguardar warmup ou `python scripts/list_person_orgs.py --refresh`. |
 | Sub-org criada agora não é reconhecida | Cache desatualizado (TTL 30 min) | `python scripts/list_person_orgs.py --refresh` ou reinicie o container. |
 | `hasAuthority: "0"` no GET | Sub-org não tem porta vinculada no painel desktop | Acesse o painel e vincule as portas à sub-org. |

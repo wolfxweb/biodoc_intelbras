@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import httpx
 
 from src.core.logging import logger
+from src.core.webhook_log import format_biodoc_call
 
 
 class BiodocAPIError(Exception):
@@ -249,10 +250,16 @@ class BiodocClient:
             params["endDate"] = end_date
 
         logger.info(
-            "[BIODOC OUT] GET /logs/external-audits idCard=%s initialDate=%s endDate=%s",
-            id_card,
-            initial_date,
-            end_date,
+            format_biodoc_call(
+                direction="OUT",
+                method="GET",
+                path="/logs/external-audits",
+                fields={
+                    "idCard": id_card,
+                    "initialDate": initial_date,
+                    "endDate": end_date,
+                },
+            )
         )
         try:
             response = await self._client.get("/logs/external-audits", params=params)
@@ -264,12 +271,6 @@ class BiodocClient:
             raise BiodocAPIUnavailableError(
                 f"Erro de rede ao consultar BioDoc external-audits (idCard={id_card}): {exc}"
             ) from exc
-
-        logger.info(
-            "[BIODOC IN] GET /logs/external-audits idCard=%s status=%d",
-            id_card,
-            response.status_code,
-        )
 
         if response.status_code == 401:
             raise BiodocAPIUnauthorizedError("BIODOC_TOKEN_API recusado pela API BioDoc")
@@ -296,6 +297,15 @@ class BiodocClient:
         data = _unwrap_biodoc_payload(body)
         raw_logs = data.get("logs") if data else None
         if not isinstance(raw_logs, list):
+            logger.info(
+                format_biodoc_call(
+                    direction="IN",
+                    method="GET",
+                    path="/logs/external-audits",
+                    status=response.status_code,
+                    fields={"idCard": id_card, "count": 0},
+                )
+            )
             return []
 
         entries: list[ExternalAuditEntry] = []
@@ -317,9 +327,13 @@ class BiodocClient:
             )
 
         logger.info(
-            "[BIODOC IN] external-audits idCard=%s count=%d",
-            id_card,
-            len(entries),
+            format_biodoc_call(
+                direction="IN",
+                method="GET",
+                path="/logs/external-audits",
+                status=response.status_code,
+                fields={"idCard": id_card, "count": len(entries)},
+            )
         )
         return entries
 
@@ -336,7 +350,13 @@ class BiodocClient:
         if self._client is None:
             raise BiodocAPIUnavailableError("BiodocClient não iniciado")
 
-        logger.info("[BIODOC OUT] GET /integrations/log/%s", reference_id)
+        logger.info(
+            format_biodoc_call(
+                direction="OUT",
+                method="GET",
+                path=f"/integrations/log/{reference_id}",
+            )
+        )
         try:
             response = await self._client.get(f"/integrations/log/{reference_id}")
         except httpx.TimeoutException as exc:
@@ -347,12 +367,6 @@ class BiodocClient:
             raise BiodocAPIUnavailableError(
                 f"Erro de rede ao consultar BioDoc (reference_id={reference_id}): {exc}"
             ) from exc
-
-        logger.info(
-            "[BIODOC IN] GET /integrations/log/%s status=%d",
-            reference_id,
-            response.status_code,
-        )
 
         if response.status_code == 401:
             logger.warning(
@@ -381,15 +395,6 @@ class BiodocClient:
                 "Resposta inválida da API BioDoc (JSON malformado)"
             ) from exc
 
-        try:
-            logger.info(
-                "[BIODOC IN] body reference_id=%s json=%s",
-                reference_id,
-                json.dumps(body, ensure_ascii=False),
-            )
-        except (TypeError, ValueError):
-            logger.info("[BIODOC IN] body reference_id=%s json=<unserializable>", reference_id)
-
         data = _unwrap_biodoc_payload(body)
         if not data:
             raise BiodocAPIUnavailableError(
@@ -405,12 +410,21 @@ class BiodocClient:
         operador = _extract_operador_from_log_record(data)
         local_token = _extract_local_token_from_log_record(data)
         logger.info(
-            "[BIODOC IN] log reference_id=%s detail=%s json=%s operador=%r local_token=%r",
-            reference_id,
-            "present" if data.get("detail") else "absent",
-            "present" if data.get("json") else "absent",
-            operador,
-            local_token,
+            format_biodoc_call(
+                direction="IN",
+                method="GET",
+                path=f"/integrations/log/{reference_id}",
+                status=response.status_code,
+                fields={
+                    "id_Card": id_card,
+                    "name": data.get("name") or data.get("userName"),
+                    "status": data.get("status"),
+                    "detail": "present" if data.get("detail") else "absent",
+                    "operador": operador,
+                    "local_token": local_token,
+                    "required_name": data.get("requiredName") or data.get("reguiredName"),
+                },
+            )
         )
 
         return IntegrationLogData(

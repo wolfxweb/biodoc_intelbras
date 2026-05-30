@@ -187,8 +187,8 @@ Exemplos de URL:
 | Local (só teste interno) | `http://IP:8000/webhook/biodoc` — **o BioDoc na nuvem normalmente não alcança localhost** |
 
 **Não** acrescente parâmetros na URL do webhook (`?operador=`, `?details=`, etc.).
-O `details={"operador":"..."}` fica **somente** na URL de verify; o middleware lê
-o operador via `GET /integrations/log/{reference_Id}` (campo `detail`).
+O middleware resolve orgCode via `GET /integrations/log/{reference_Id}` usando
+**local_token** (`json.Local Token`) e, em seguida, **reguiredName**.
 
 **Fallback quando o POST urlWebhook não traz `reference_Id`/`logId`/`id_Log`**
 (o BioDoc envia só `card` + `image`):
@@ -196,7 +196,7 @@ o operador via `GET /integrations/log/{reference_Id}` (campo `detail`).
 1. `GET /logs/external-audits?idCard={card}&initialDate=&endDate=` — janela de ±15 min
    em torno de `date` do payload (ou últimos 15 min se `date` ausente)
 2. Escolhe o log mais recente / mais próximo do timestamp do evento
-3. `GET /integrations/log/{id}` — extrai `detail.operador`, `local_token`, `reguiredName`
+3. `GET /integrations/log/{id}` — extrai `local_token`, `reguiredName`
 
 Se external-audits ou integrations/log falhar, o sync continua com `orgCode` fallback (`001`).
 
@@ -260,8 +260,10 @@ Resposta esperada (estrutura simplificada):
 }
 ```
 
-O middleware extrai o operador de `detail` (JSON) ou de `json.Operador` para
-mapear `orgCode` no Defense IA. Identificadores aceitos no POST do webhook:
+O middleware extrai **local_token** (`json.Local Token`) e **reguiredName** do
+log para mapear `orgCode` no Defense IA (ordem: local_token → reguiredName →
+fallback `001`). O campo `detail.operador` da verify **não** é usado.
+Identificadores aceitos no POST do webhook:
 `reference_Id` → `logId` → `id_Log` (convertido para string na chamada à API).
 
 **Sem identificador no POST:** fallback automático via
