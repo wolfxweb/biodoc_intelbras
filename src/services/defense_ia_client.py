@@ -34,6 +34,8 @@ LEGACY_UPDATE_TOKEN = "/admin/API/accounts/updateToken"
 
 JSON_HEADERS = {"content-type": "application/json;charset=UTF-8"}
 SUCCESS_CODES = (None, 0, "0", 1000, "1000")
+# Defense devolve HTTP 200 + code 1001 em PUT redundante; GET confirma estado desejado.
+IDEMPOTENT_MUTATION_CODES = (1001, "1001")
 
 # Listagem de sub-organizações (grupos de pessoas) no Defense IA BRMS 3.x.
 BRMS_PERSON_GROUP_LIST = "/obms/api/v1.1/acs/person-group/list"
@@ -55,9 +57,15 @@ def extract_org_code_from_person_body(body: dict[str, Any] | None) -> str | None
     if isinstance(base, dict):
         code = base.get("orgCode")
         if code:
-            return str(code)
+            return str(code).strip()
     code = node.get("orgCode")
-    return str(code) if code else None
+    return str(code).strip() if code else None
+
+
+def _org_codes_match(actual: str | None, expected: str | None) -> bool:
+    if not actual or not expected:
+        return False
+    return actual.strip() == expected.strip()
 
 
 def _parse_org_name_code_pairs(body: object) -> dict[str, str]:
@@ -289,6 +297,22 @@ class DefenseIAClient:
         if response.status_code == 401:
             await self.login()
             response = await self._upsert_person_request(payload, org_code)
+
+        if not self._brms_mutation_ok(response):
+            expected_org = (org_code or self.settings.org_code or "001").strip()
+            if await self._recover_idempotent_mutation_failure(
+                response,
+                payload.external_id,
+                expected_org,
+            ):
+                logger.warning(
+                    "[DEFENSE_IA] mutação retornou code=%s para external_id=%s "
+                    "mas orgCode=%s já está aplicado — tratado como sucesso idempotente",
+                    self._response_json_code(response),
+                    payload.external_id,
+                    expected_org,
+                )
+                return {}
 
         self._raise_for_response(response)
         if not response.content:
@@ -600,7 +624,7 @@ class DefenseIAClient:
                     response.status_code,
                     response.text[:500],
                 )
-                if response.is_success and previous_org and resolved and previous_org != resolved:
+                if self._brms_mutation_ok(response) and previous_org and resolved and previous_org != resolved:
                     response = await self._ensure_org_code_applied(
                         person_id=person_id,
                         person_payload=person_payload,
@@ -609,7 +633,7 @@ class DefenseIAClient:
                         headers=headers,
                         last_response=response,
                     )
-                if response.is_success:
+                if self._brms_mutation_ok(response):
                     await self._log_verified_org_code(person_id, resolved)
                 return response
             person_payload = self.build_person_payload(payload, org_code=org_code)
@@ -631,7 +655,7 @@ class DefenseIAClient:
                 response.status_code,
                 response.text[:500],
             )
-            if response.is_success:
+            if self._brms_mutation_ok(response):
                 await self._log_verified_org_code(person_id, resolved)
             return response
         person_payload = self.build_person_payload(payload, org_code=org_code)
@@ -676,7 +700,7 @@ class DefenseIAClient:
     ) -> httpx.Response:
         verified_body = await self._fetch_brms_person(person_id)
         verified_org = extract_org_code_from_person_body(verified_body)
-        if verified_org == target_org_code:
+        if _org_codes_match(verified_org, target_org_code):
             return last_response
         logger.warning(
             "[DEFENSE_IA] orgCode não alterou no PUT (esperado=%s, atual=%s, anterior=%s) "
@@ -992,6 +1016,48 @@ class DefenseIAClient:
             "Time-Zone": "America/Sao_Paulo",
             "Accept-Language": "pt",
         }
+
+    async def _recover_idempotent_mutation_failure(
+        self,
+        response: httpx.Response,
+        person_id: str,
+        expected_org_code: str,
+    ) -> bool:
+        """PUT/POST com code 1001 mas pessoa já no orgCode esperado (update redundante)."""
+        code = self._response_json_code(response)
+        if code not in IDEMPOTENT_MUTATION_CODES:
+            return False
+        verified_body = await self._fetch_brms_person(person_id)
+        verified_org = extract_org_code_from_person_body(verified_body)
+        if _org_codes_match(verified_org, expected_org_code):
+            return True
+        logger.warning(
+            "[DEFENSE_IA] code=%s mas orgCode diverge: esperado=%s atual=%s external_id=%s",
+            code,
+            expected_org_code,
+            verified_org,
+            person_id,
+        )
+        return False
+
+    @staticmethod
+    def _response_json_code(response: httpx.Response) -> Any:
+        if not response.content:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if isinstance(payload, dict):
+            return payload.get("code")
+        return None
+
+    @staticmethod
+    def _brms_mutation_ok(response: httpx.Response) -> bool:
+        """HTTP 2xx **e** code JSON 1000 (Defense usa 200 + code no body)."""
+        if not response.is_success:
+            return False
+        return DefenseIAClient._response_json_code(response) in SUCCESS_CODES
 
     def _raise_for_response(self, response: httpx.Response) -> None:
         if response.content:

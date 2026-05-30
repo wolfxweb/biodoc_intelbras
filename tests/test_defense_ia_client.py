@@ -818,3 +818,92 @@ async def test_sync_person_delete_recreate_when_put_does_not_change_org():
     assert put_calls == 1
     assert delete_calls == 1
     assert post_calls == [BRMS_PERSON]
+
+
+def test_brms_mutation_ok_requires_json_success_code():
+    ok = httpx.Response(200, json={"code": 1000, "updated": True})
+    failed_body = httpx.Response(200, json={"code": 1001, "desc": "Failed"})
+    http_err = httpx.Response(502, json={"code": 1001, "desc": "Failed"})
+
+    assert DefenseIAClient._brms_mutation_ok(ok) is True
+    assert DefenseIAClient._brms_mutation_ok(failed_body) is False
+    assert DefenseIAClient._brms_mutation_ok(http_err) is False
+
+
+@pytest.mark.asyncio
+async def test_brms_upsert_treats_code_1001_as_success_when_org_already_applied():
+    """Defense devolve HTTP 200 + code 1001 em PUT redundante; GET confirma orgCode."""
+    authorize_hits = 0
+    put_calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal authorize_hits, put_calls
+        if request.url.path == BRMS_AUTHORIZE:
+            authorize_hits += 1
+            if authorize_hits == 1:
+                return httpx.Response(
+                    401,
+                    json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
+                )
+            return httpx.Response(200, json={"code": 1000, "token": "t"})
+        if request.url.path == brms_person_path("123") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 1000,
+                    "data": {"baseInfo": {"personId": "123", "orgCode": "001021"}},
+                },
+            )
+        if request.url.path == brms_person_path("123") and request.method == "PUT":
+            put_calls += 1
+            return httpx.Response(200, json={"code": 1001, "desc": "Failed"})
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    try:
+        await client.login()
+        result = await client.sync_person(sync_payload(), "001021")
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert put_calls == 1
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_brms_upsert_raises_on_code_1001_when_org_not_applied():
+    authorize_hits = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal authorize_hits
+        if request.url.path == BRMS_AUTHORIZE:
+            authorize_hits += 1
+            if authorize_hits == 1:
+                return httpx.Response(
+                    401,
+                    json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
+                )
+            return httpx.Response(200, json={"code": 1000, "token": "t"})
+        if request.url.path == brms_person_path("123") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 1000,
+                    "data": {"baseInfo": {"personId": "123", "orgCode": "001008"}},
+                },
+            )
+        if request.url.path == brms_person_path("123") and request.method == "PUT":
+            return httpx.Response(200, json={"code": 1001, "desc": "Failed"})
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    try:
+        await client.login()
+        with pytest.raises(DefenseIAError, match="1001"):
+            await client.sync_person(sync_payload(), "001021")
+    finally:
+        await client.close()
+        await http_client.aclose()

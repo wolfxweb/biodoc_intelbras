@@ -606,6 +606,8 @@ async def _sync_to_defense(
         "status": "success",
         "external_id": card,
         "defense_sync": "ok",
+        "orgCode": resolved_org_code,
+        "name": name,
     }
 
 
