@@ -708,16 +708,3 @@ async def process_biodoc_webhook_by_card(
         defense_client=defense_client,
     )
 
-
-def parse_redirect_response_success(response: str | None) -> bool:
-    if response is None or response.strip() == "":
-        return True
-    normalized = response.strip().lower()
-    if normalized in ("200", "201", "204", "true", "1", "ok", "success"):
-        return True
-    if normalized in ("false", "0", "fail", "error"):
-        return False
-    try:
-        return int(normalized) >= 200 and int(normalized) < 300
-    except ValueError:
-        return False
