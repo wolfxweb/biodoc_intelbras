@@ -1,20 +1,18 @@
 """
-Lista as sub-organizações de pessoas cadastradas no Defense IA.
+Lista sub-organizações (grupos de pessoas) do Defense IA.
 
-O servidor BRMS 3.x deste cliente não expõe endpoint listador de organizações
-(/obms/.../org/list, /org/tree, /department/* respondem 404), então este
-script usa o cliente para varrer todas as pessoas via /obms/api/v1.1/acs/person/page
-e extrair os pares (orgCode, orgName).
+Fonte: GET /obms/api/v1.1/acs/person-group/list (resposta em data.results).
 
-Use a saída para ver quais nomes podem aparecer em `reguiredName` do BioDoc.
-O middleware faz o mapeamento `reguiredName -> orgCode` automaticamente em
-runtime; este script é só diagnóstico/visibilidade.
+Use a saída para ver quais nomes podem aparecer em `reguiredName` ou no
+`details.operador` da URL verify do BioDoc. O middleware resolve via
+GET /integrations/log/{reference_Id} (campo detail). Este script é só
+diagnóstico/visibilidade.
 
 Uso:
   docker compose run --rm --no-deps -v "${PWD}:/app" \\
     middleware-biodoc-intelbras python scripts/list_person_orgs.py
 
-  # Force refresh (ignora cache em memória, sempre repagina)
+  # Force refresh (ignora cache em memória)
   python scripts/list_person_orgs.py --refresh
 """
 
@@ -36,7 +34,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Lista as sub-organizações de pessoas cadastradas no Defense IA "
+            "Lista grupos/sub-organizações via person-group/list no Defense IA "
             "(usadas para vincular ACS person a portas no painel desktop)."
         ),
     )
@@ -88,7 +86,8 @@ async def main() -> None:
             sys.exit(1)
         print("Login OK\n")
 
-        orgs = await client.list_person_orgs(force_refresh=args.refresh)
+        orgs, source = await client.list_available_orgs(force_refresh=args.refresh)
+        print(f"Fonte dos dados: {source}")
         _print_table(orgs)
     except DefenseIAError as exc:
         print(f"ERRO Defense IA: {exc}")

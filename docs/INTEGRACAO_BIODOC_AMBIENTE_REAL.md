@@ -186,7 +186,34 @@ Exemplos de URL:
 | Homolog Wolfx | `https://homologa.wolfx.com.br/webhook/biodoc` |
 | Local (só teste interno) | `http://IP:8000/webhook/biodoc` — **o BioDoc na nuvem normalmente não alcança localhost** |
 
-O BioDoc envia:
+**Não** acrescente parâmetros na URL do webhook (`?operador=`, `?details=`, etc.).
+O `details={"operador":"..."}` fica **somente** na URL de verify; o middleware lê
+o operador via `GET /integrations/log/{reference_Id}` (campo `detail`).
+
+**Fallback quando o POST urlWebhook não traz `reference_Id`/`logId`/`id_Log`**
+(o BioDoc envia só `card` + `image`):
+
+1. `GET /logs/external-audits?idCard={card}&initialDate=&endDate=` — janela de ±15 min
+   em torno de `date` do payload (ou últimos 15 min se `date` ausente)
+2. Escolhe o log mais recente / mais próximo do timestamp do evento
+3. `GET /integrations/log/{id}` — extrai `detail.operador`, `local_token`, `reguiredName`
+
+Se external-audits ou integrations/log falhar, o sync continua com `orgCode` fallback (`001`).
+
+Alternativa preferencial (quando o BioDoc inclui o ID no callback): use callback **`url`** (redirect)
+em vez de `urlWebhook`, apontando para `/webhook/biodoc/redirect` — o BioDoc
+inclui `reference_Id` na query do redirect e o fluxo `integrations/log` funciona direto.
+
+Exemplo de URL verify (sandbox, Colaboradores, **sem** parâmetros no webhook):
+
+```
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22colaboradores%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc/redirect
+```
+
+Ou, se precisar manter urlWebhook, peça ao suporte BioDoc para incluir `logId` no
+body do POST (junto com `card` e `image`).
+
+Exemplos de URL do webhook (sem query):
 
 ```http
 POST /webhook/biodoc HTTP/1.1
@@ -228,9 +255,20 @@ Resposta esperada (estrutura simplificada):
   "status": 2,
   "mainImage": "https://url-temporaria-da-foto.jpg",
   "path": "https://url-temporaria-da-foto.jpg",
-  "reguiredName": "Nome da empresa que realizou a interação"
+  "reguiredName": "Nome da empresa que realizou a interação",
+  "detail": "{\"operador\":\"VIVER\"}"
 }
 ```
+
+O middleware extrai o operador de `detail` (JSON) ou de `json.Operador` para
+mapear `orgCode` no Defense IA. Identificadores aceitos no POST do webhook:
+`reference_Id` → `logId` → `id_Log` (convertido para string na chamada à API).
+
+**Sem identificador no POST:** fallback automático via
+`GET /logs/external-audits` + `GET /integrations/log/{id}` (ver seção 3 acima).
+Limitação: correlação por janela de tempo — várias verifies do mesmo cartão no
+intervalo podem associar log incorreto; preferível redirect com `reference_Id`
+ou BioDoc incluir `logId` no body do urlWebhook.
 
 Se `status` não for **1** ou **2** (ativo), o middleware responde **422** e **não** envia ao Defense.
 

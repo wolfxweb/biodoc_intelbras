@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -34,13 +35,64 @@ LEGACY_UPDATE_TOKEN = "/admin/API/accounts/updateToken"
 JSON_HEADERS = {"content-type": "application/json;charset=UTF-8"}
 SUCCESS_CODES = (None, 0, "0", 1000, "1000")
 
-# Endpoint usado para inferir as sub-organizações cadastradas no Defense IA.
-# Não há endpoint público de listagem de orgs neste servidor (BRMS 3.x da Unimed
-# retorna 404 em /obms/.../org/list), então a inferência é feita varrendo as
-# pessoas existentes e coletando pares (orgCode, orgName).
-BRMS_PERSON_PAGE = "/obms/api/v1.1/acs/person/page"
-PERSON_ORGS_CACHE_TTL_SECONDS = 1800.0
-PERSON_ORGS_PAGE_SIZE = 200
+# Listagem de sub-organizações (grupos de pessoas) no Defense IA BRMS 3.x.
+BRMS_PERSON_GROUP_LIST = "/obms/api/v1.1/acs/person-group/list"
+BRMS_PERSON_DELETE_BATCH = "/obms/api/v1.1/acs/person/delete/batch"
+PERSON_GROUPS_CACHE_TTL_SECONDS = 1800.0
+
+
+def _normalize_org_lookup_key(name: str) -> str:
+    return name.strip().casefold()
+
+
+def extract_org_code_from_person_body(body: dict[str, Any] | None) -> str | None:
+    if not body:
+        return None
+    node = body.get("data", body)
+    if not isinstance(node, dict):
+        return None
+    base = node.get("baseInfo")
+    if isinstance(base, dict):
+        code = base.get("orgCode")
+        if code:
+            return str(code)
+    code = node.get("orgCode")
+    return str(code) if code else None
+
+
+def _parse_org_name_code_pairs(body: object) -> dict[str, str]:
+    """Extrai {orgName_lower: orgCode} de respostas variadas do Defense IA."""
+    orgs: dict[str, str] = {}
+    if not isinstance(body, dict):
+        return orgs
+
+    data = body.get("data", body)
+    items: list[object] = []
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        for key in ("list", "pageData", "groups", "records", "data", "groupList", "results"):
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                items = candidate
+                break
+
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        code = entry.get("orgCode") or entry.get("groupCode") or entry.get("code")
+        name = entry.get("orgName") or entry.get("groupName") or entry.get("name")
+        if not code or not name:
+            base = entry.get("baseInfo")
+            if isinstance(base, dict):
+                code = code or base.get("orgCode") or base.get("groupCode")
+                name = name or base.get("orgName") or base.get("groupName")
+        if not code or not name:
+            continue
+        lookup_key = _normalize_org_lookup_key(str(name))
+        if lookup_key and lookup_key not in orgs:
+            orgs[lookup_key] = str(code)
+    return orgs
 
 
 class DefenseIAError(Exception):
@@ -116,12 +168,10 @@ class DefenseIAClient:
         self._dollar_signature: str | None = None
         self._keep_alive_task: asyncio.Task[None] | None = None
         self._auth_lock = asyncio.Lock()
-        # Cache nome (lower) -> orgCode obtido via varredura de pessoas. Como
-        # não existe endpoint listador de orgs neste servidor, evitamos pagar
-        # o custo da varredura a cada webhook usando TTL.
-        self._person_orgs_cache: dict[str, str] | None = None
-        self._person_orgs_cache_at: float = 0.0
-        self._person_orgs_lock = asyncio.Lock()
+        self._person_groups_cache: dict[str, str] | None = None
+        self._person_groups_cache_at: float = 0.0
+        self._person_groups_lock = asyncio.Lock()
+        self._person_groups_available: bool | None = None
 
     @property
     def token(self) -> str | None:
@@ -140,8 +190,9 @@ class DefenseIAClient:
             try:
                 await self.login()
             except DefenseIAError as exc:
-                logger.warning(
-                    "Defense IA startup login failed, will retry in background: %s", exc
+                keep_alive_logger.warning(
+                    "[KEEP_ALIVE] startup login failed, will retry in background: %s",
+                    exc,
                 )
             self._keep_alive_task = asyncio.create_task(self._keep_alive_loop())
 
@@ -212,6 +263,22 @@ class DefenseIAClient:
             raise DefenseIANotReadyError("Defense IA não conectado")
         return await self._send_person_with_relogin(payload, org_code)
 
+    async def warmup_org_cache(self) -> None:
+        """Pré-carrega cache de orgs em background (evita ~3 min no 1º webhook)."""
+        if not self.settings.enabled:
+            return
+        try:
+            if not self._token:
+                await self.login()
+            orgs, source = await self.list_available_orgs(force_refresh=True)
+            logger.info(
+                "[DEFENSE_IA] cache de orgs aquecido: %d entrada(s) (fonte=%s)",
+                len(orgs),
+                source,
+            )
+        except DefenseIAError as exc:
+            logger.warning("[DEFENSE_IA] falha ao aquecer cache de orgs: %s", exc)
+
     async def _send_person_with_relogin(
         self, payload: SyncRequest, org_code: str | None
     ) -> dict[str, Any]:
@@ -228,119 +295,110 @@ class DefenseIAClient:
             return {}
         return response.json()
 
-    async def list_person_orgs(self, force_refresh: bool = False) -> dict[str, str]:
-        """Retorna {orgName_lower: orgCode} das sub-organizações do Defense IA.
+    async def list_person_groups(self, force_refresh: bool = False) -> dict[str, str]:
+        """Retorna {orgName_lower: orgCode} via GET /acs/person-group/list."""
+        if self._person_groups_available is False and not force_refresh:
+            return {}
 
-        Como o servidor da Unimed não expõe endpoint listador de orgs (todas as
-        rotas /org/list, /org/tree, /department/* documentadas retornam 404),
-        a única fonte confiável é varrer todas as pessoas e coletar o par
-        (orgCode, orgName) que aparece em baseInfo. O resultado é cacheado em
-        memória com TTL para evitar paginar 70+ páginas a cada webhook.
-        """
         now = time.time()
         if (
             not force_refresh
-            and self._person_orgs_cache is not None
-            and (now - self._person_orgs_cache_at) < PERSON_ORGS_CACHE_TTL_SECONDS
+            and self._person_groups_cache is not None
+            and (now - self._person_groups_cache_at) < PERSON_GROUPS_CACHE_TTL_SECONDS
         ):
-            return self._person_orgs_cache
+            return self._person_groups_cache
 
-        async with self._person_orgs_lock:
+        async with self._person_groups_lock:
             now = time.time()
             if (
                 not force_refresh
-                and self._person_orgs_cache is not None
-                and (now - self._person_orgs_cache_at) < PERSON_ORGS_CACHE_TTL_SECONDS
+                and self._person_groups_cache is not None
+                and (now - self._person_groups_cache_at) < PERSON_GROUPS_CACHE_TTL_SECONDS
             ):
-                return self._person_orgs_cache
+                return self._person_groups_cache
 
             if not self._token:
                 await self.login()
 
-            orgs: dict[str, str] = {}
-            page = 1
-            while True:
+            response = await self._request(
+                "GET",
+                BRMS_PERSON_GROUP_LIST,
+                headers=self._auth_headers(),
+            )
+            if response.status_code == 401:
+                await self.login()
                 response = await self._request(
                     "GET",
-                    BRMS_PERSON_PAGE,
+                    BRMS_PERSON_GROUP_LIST,
                     headers=self._auth_headers(),
-                    params={
-                        "page": page,
-                        "pageSize": PERSON_ORGS_PAGE_SIZE,
-                        "orgCode": self.settings.org_code or "001",
-                        "containChild": "1",
-                    },
                 )
-                if response.status_code == 401:
-                    await self.login()
-                    response = await self._request(
-                        "GET",
-                        BRMS_PERSON_PAGE,
-                        headers=self._auth_headers(),
-                        params={
-                            "page": page,
-                            "pageSize": PERSON_ORGS_PAGE_SIZE,
-                            "orgCode": self.settings.org_code or "001",
-                            "containChild": "1",
-                        },
-                    )
-                if not response.is_success:
-                    raise DefenseIAError(
-                        f"Falha ao listar sub-orgs (HTTP {response.status_code})"
-                    )
-                try:
-                    body = response.json()
-                except ValueError as exc:
-                    raise DefenseIAError(
-                        "Resposta inválida ao listar sub-orgs do Defense IA"
-                    ) from exc
-                data = body.get("data") or {}
-                people = data.get("pageData") or []
-                if not isinstance(people, list) or not people:
-                    break
-                for entry in people:
-                    base = entry.get("baseInfo") if isinstance(entry, dict) else None
-                    if not isinstance(base, dict):
-                        continue
-                    code = base.get("orgCode")
-                    name = base.get("orgName")
-                    if not code or not name:
-                        continue
-                    key = str(name).strip().lower()
-                    if key and key not in orgs:
-                        orgs[key] = str(code)
-                if len(people) < PERSON_ORGS_PAGE_SIZE:
-                    break
-                page += 1
 
-            self._person_orgs_cache = orgs
-            self._person_orgs_cache_at = time.time()
+            if response.status_code in (404, 405):
+                self._person_groups_available = False
+                logger.warning(
+                    "[DEFENSE_IA] person-group/list indisponível (HTTP %d) — "
+                    "nomes de grupo não serão resolvidos até o endpoint responder",
+                    response.status_code,
+                )
+                return {}
+
+            if not response.is_success:
+                raise DefenseIAError(
+                    f"Falha ao listar person-group (HTTP {response.status_code})"
+                )
+
+            try:
+                body = response.json()
+            except ValueError as exc:
+                raise DefenseIAError(
+                    "Resposta inválida ao listar person-group do Defense IA"
+                ) from exc
+
+            orgs = _parse_org_name_code_pairs(body)
+            self._person_groups_available = True
+            self._person_groups_cache = orgs
+            self._person_groups_cache_at = time.time()
             logger.info(
-                "[DEFENSE_IA] cache de sub-orgs atualizado: %d entrada(s)",
+                "[DEFENSE_IA] cache de grupos atualizado (person-group/list): %d entrada(s)",
                 len(orgs),
             )
+            if not orgs:
+                sample = json.dumps(body, ensure_ascii=False)[:500]
+                logger.info(
+                    "[DEFENSE_IA] person-group/list retornou 0 grupos — amostra: %s",
+                    sample,
+                )
             return orgs
 
+    async def list_available_orgs(
+        self, force_refresh: bool = False
+    ) -> tuple[dict[str, str], str]:
+        """Lista orgs via GET /acs/person-group/list (cache TTL 30 min)."""
+        if not force_refresh:
+            groups = await self.list_person_groups()
+            if groups:
+                return groups, "person-group/list"
+
+        groups = await self.list_person_groups(force_refresh=True)
+        return groups, "person-group/list"
+
     async def resolve_org_code(self, name: str | None) -> str | None:
-        """Resolve o orgCode no Defense IA a partir do `reguiredName` do BioDoc.
+        """Resolve o orgCode no Defense IA a partir do nome do grupo (operador/reguiredName).
 
         Aceita dois formatos:
 
         1. Código direto (apenas dígitos, ex.: `"001015001"`): retorna como
-           está, sem chamar a API. Esta é a forma recomendada para evitar a
-           paginação completa de pessoas (~3 min no servidor da Unimed).
-        2. Nome amigável (ex.: `"Corb"`): faz lookup case-insensitive no
-           cache de sub-orgs (preenchido na 1ª chamada com varredura completa,
-           válido por PERSON_ORGS_CACHE_TTL_SECONDS).
+           está, sem chamar a API.
+        2. Nome amigável (ex.: `"Corb"`): lookup case-insensitive no cache de
+           grupos obtido via `person-group/list` (aquecido no boot).
 
-        Em caso de miss no cache, **não** força re-varredura para evitar
-        sobrecarga em rajadas de webhooks com nomes desconhecidos. Para
-        capturar sub-orgs criadas após o boot, use
-        `await client.list_person_orgs(force_refresh=True)` (ou rode o
-        script `scripts/list_person_orgs.py --refresh`).
+        Em caso de miss no cache, **não** força re-fetch para evitar sobrecarga
+        em rajadas de webhooks com nomes desconhecidos. Para capturar grupos
+        criados após o boot, use `await client.list_available_orgs(force_refresh=True)`
+        (ou rode o script `scripts/list_person_orgs.py --refresh`).
 
-        Retorna `None` se o nome for vazio ou não casar com nenhuma sub-org —
-        o chamador decide o fallback.
+        Retorna `None` se o nome for vazio ou não casar com nenhum grupo —
+        o chamador decide o fallback (ex.: `DEFENSE_IA_ORG_CODE`).
         """
         if not name:
             return None
@@ -351,8 +409,16 @@ class DefenseIAClient:
         # economizamos a varredura completa de pessoas.
         if key.isdigit():
             return key
-        orgs = await self.list_person_orgs()
-        return orgs.get(key.lower())
+        orgs, source = await self.list_available_orgs()
+        resolved = orgs.get(_normalize_org_lookup_key(key))
+        if resolved:
+            logger.debug(
+                "[DEFENSE_IA] resolve_org_code %r -> %s (fonte=%s)",
+                key,
+                resolved,
+                source,
+            )
+        return resolved
 
     async def sync_visitor(
         self, payload: SyncRequest, entrance_ids: list[str]
@@ -508,6 +574,20 @@ class DefenseIAClient:
                     org_code=org_code,
                 )
                 url = brms_person_path(person_id)
+                resolved = person_payload.get("baseInfo", {}).get("orgCode", org_code)
+                previous_org = extract_org_code_from_person_body(existing_body)
+                if previous_org and resolved and previous_org != resolved:
+                    logger.info(
+                        "[DEFENSE_IA] movendo pessoa external_id=%s de orgCode=%s para %s",
+                        payload.external_id,
+                        previous_org,
+                        resolved,
+                    )
+                logger.info(
+                    "[DEFENSE_IA] sync person external_id=%s orgCode=%s",
+                    payload.external_id,
+                    resolved,
+                )
                 logger.debug(
                     "[DEFENSE_IA OUT] method=PUT url=%s payload=%s",
                     url,
@@ -520,8 +600,25 @@ class DefenseIAClient:
                     response.status_code,
                     response.text[:500],
                 )
+                if response.is_success and previous_org and resolved and previous_org != resolved:
+                    response = await self._ensure_org_code_applied(
+                        person_id=person_id,
+                        person_payload=person_payload,
+                        target_org_code=resolved,
+                        previous_org_code=previous_org,
+                        headers=headers,
+                        last_response=response,
+                    )
+                if response.is_success:
+                    await self._log_verified_org_code(person_id, resolved)
                 return response
             person_payload = self.build_person_payload(payload, org_code=org_code)
+            resolved = person_payload.get("baseInfo", {}).get("orgCode", org_code)
+            logger.info(
+                "[DEFENSE_IA] sync person external_id=%s orgCode=%s",
+                payload.external_id,
+                resolved,
+            )
             logger.debug(
                 "[DEFENSE_IA OUT] method=POST url=%s payload=%s",
                 BRMS_PERSON,
@@ -534,6 +631,8 @@ class DefenseIAClient:
                 response.status_code,
                 response.text[:500],
             )
+            if response.is_success:
+                await self._log_verified_org_code(person_id, resolved)
             return response
         person_payload = self.build_person_payload(payload, org_code=org_code)
         url = f"/OBMS/accessControl/person/{payload.external_id}"
@@ -550,6 +649,68 @@ class DefenseIAClient:
             response.text[:500],
         )
         return response
+
+    async def _log_verified_org_code(
+        self, person_id: str, expected_org_code: str | None
+    ) -> None:
+        if not expected_org_code:
+            return
+        verified_body = await self._fetch_brms_person(person_id)
+        verified_org = extract_org_code_from_person_body(verified_body)
+        if verified_org:
+            logger.info(
+                "[DEFENSE_IA] verificado orgCode=%s para external_id=%s",
+                verified_org,
+                person_id,
+            )
+
+    async def _ensure_org_code_applied(
+        self,
+        *,
+        person_id: str,
+        person_payload: dict[str, Any],
+        target_org_code: str,
+        previous_org_code: str,
+        headers: dict[str, str],
+        last_response: httpx.Response,
+    ) -> httpx.Response:
+        verified_body = await self._fetch_brms_person(person_id)
+        verified_org = extract_org_code_from_person_body(verified_body)
+        if verified_org == target_org_code:
+            return last_response
+        logger.warning(
+            "[DEFENSE_IA] orgCode não alterou no PUT (esperado=%s, atual=%s, anterior=%s) "
+            "— recriando via delete+POST external_id=%s",
+            target_org_code,
+            verified_org,
+            previous_org_code,
+            person_id,
+        )
+        delete_response = await self._request(
+            "POST",
+            BRMS_PERSON_DELETE_BATCH,
+            json={"personIds": [person_id]},
+            headers=headers,
+        )
+        if not delete_response.is_success:
+            logger.warning(
+                "[DEFENSE_IA] delete batch falhou status=%d — mantendo resposta do PUT",
+                delete_response.status_code,
+            )
+            return last_response
+        create_response = await self._request(
+            "POST",
+            BRMS_PERSON,
+            json=person_payload,
+            headers=headers,
+        )
+        logger.debug(
+            "[DEFENSE_IA IN] method=POST url=%s status=%d body=%s (recriação pós-delete)",
+            BRMS_PERSON,
+            create_response.status_code,
+            create_response.text[:500],
+        )
+        return create_response
 
     async def _fetch_brms_person(self, person_id: str) -> dict[str, Any] | None:
         response = await self._request(
@@ -811,7 +972,6 @@ class DefenseIAClient:
                     keep_alive_logger.warning(
                         "[KEEP_ALIVE] re-login falhou: %s", exc
                     )
-                    logger.warning("Defense IA keep-alive re-login failed: %s", exc)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         if not self._http_client:

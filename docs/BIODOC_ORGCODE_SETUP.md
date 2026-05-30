@@ -77,7 +77,7 @@ hierárquicos. Exemplos no servidor da Unimed:
 
 ### 1.2 Pelo middleware (recomendado)
 
-Lista as mesmas sub-orgs varrendo as pessoas via API:
+Lista grupos via `GET /obms/api/v1.1/acs/person-group/list` (~200 ms):
 
 ```bash
 docker compose run --rm --no-deps -v "${PWD}:/app" \
@@ -92,8 +92,9 @@ Saída:
 ```
 Servidor: http://200.180.74.90
 Login OK
+Fonte dos dados: person-group/list
 
-Total: 41 sub-organização(ões)
+Total: 51 sub-organização(ões)
 
 orgCode        orgName
 --------------------------------------------------
@@ -105,8 +106,7 @@ orgCode        orgName
 ...
 ```
 
-> A primeira execução pode demorar ~3 min (paginação completa). Subsequentes
-> usam cache em memória de 30 min.
+> O middleware aquece esse cache no boot. Subsequentes usam memória (TTL 30 min).
 
 ---
 
@@ -133,14 +133,21 @@ Se preferir digitar o nome em vez do código, também funciona:
 
 | Campo BioDoc | Valor | Resultado |
 |---|---|---|
-| `reguiredName` | `Corb` | Middleware busca o nome no cache, encontra `001015001`. |
-| `reguiredName` | `corb` / `CORB` / `  Corb  ` | Mesma coisa (case-insensitive, trim). |
-| `reguiredName` | `Colaboradores` | `orgCode=001008`. |
+| `reguiredName` ou `detail.operador` (log) | `Corb` | Middleware busca o nome no cache de `person-group/list`, encontra `001015001`. |
+| `reguiredName` ou `detail.operador` | `corb` / `CORB` / `  Corb  ` | Mesma coisa (case-insensitive, trim). |
+| `reguiredName` ou `detail.operador` | `Colaboradores` | `orgCode=001008`. |
 
-> A 1ª resolução com nome novo paga **~3 min de paginação** no servidor
-> de produção (13.860 pessoas em 70 páginas). Depois fica em cache 30 min.
-> Em deploys com poucos eventos por hora isso impacta o 1º webhook do
-> dia. Use **código direto** (2.1) para evitar.
+O operador vem de `GET /integrations/log/{reference_Id}` (campo `detail`, JSON
+com `{"operador":"VIVER"}` repassado na URL verify como `details=...`). A URL
+do webhook (`urlWebhook`) **não** deve incluir `?operador=`.
+
+Quando o POST urlWebhook não traz `reference_Id`/`logId`/`id_Log`, o middleware
+consulta `GET /logs/external-audits?idCard=...` e em seguida
+`GET /integrations/log/{id}` para obter o mesmo `detail` (janela ±15 min).
+
+> Lookup por nome consulta o cache de grupos (aquecido no boot via
+> `person-group/list`). Após criar nova sub-org no painel, rode
+> `scripts/list_person_orgs.py --refresh` ou reinicie o container.
 
 ### 2.3 Quando o `reguiredName` não casa
 
@@ -176,7 +183,10 @@ container.
 │ 3) Middleware (este projeto)           │
 │                                        │
 │  a) GET /integrations/log/{reference_Id}│ ── busca dados completos no BioDoc
-│     -> retorna id_Card e reguiredName  │
+│     -> retorna id_Card, reguiredName,   │
+│        detail (operador da URL verify)  │
+│     (sem reference_Id: external-audits  │
+│      -> integrations/log/{id})          │
 │                                  │
 │  b) defense_client.resolve_org_code(reguiredName)
 │     -> "001015001" (atalho dígito) │
@@ -216,6 +226,11 @@ class IntegrationLogData:
 
 async def get_integration_log(self, reference_id: str) -> IntegrationLogData:
     ...
+
+async def get_external_audits(
+    self, id_card: str, *, initial_date=None, end_date=None
+) -> list[ExternalAuditEntry]:
+    """GET /logs/external-audits — usado como fallback para descobrir log id."""
     return IntegrationLogData(
         ...
         required_name=body.get("reguiredName") or None,
@@ -252,16 +267,16 @@ async def resolve_org_code(self, name: str | None) -> str | None:
     key = name.strip()
     if not key:
         return None
-    # Atalho: código direto evita paginação completa.
+    # Atalho: código direto não consulta a API.
     if key.isdigit():
         return key
-    orgs = await self.list_person_orgs()  # cache TTL 30 min
-    return orgs.get(key.lower())
+    orgs, _source = await self.list_available_orgs()  # person-group/list, cache TTL 30 min
+    return orgs.get(_normalize_org_lookup_key(key))
 ```
 
-E `list_person_orgs()` pagina `/obms/api/v1.1/acs/person/page` coletando
-os pares `(orgCode, orgName)` em um dict, salvo em
-`self._person_orgs_cache` por `PERSON_ORGS_CACHE_TTL_SECONDS = 1800`.
+`list_available_orgs()` chama `GET /obms/api/v1.1/acs/person-group/list` (resposta
+em `data.results`), cacheado em `self._person_groups_cache` por
+`PERSON_GROUPS_CACHE_TTL_SECONDS = 1800`. O cache é aquecido no boot do middleware.
 
 ### 4.4 Gravação no payload da pessoa
 
@@ -339,8 +354,8 @@ painel desktop vinculou à sub-org `Corb`.
 
 | Sintoma | Causa provável | Solução |
 |---|---|---|
-| Pessoa entra em `001` (Unimed) em vez da sub-org esperada | `reguiredName` em branco no BioDoc, ou nome digitado errado | Conferir cadastro no BioDoc; usar `scripts/list_person_orgs.py` para checar nomes válidos. |
-| Webhook demora ~3 min na 1ª execução do dia | `reguiredName` é nome (não código) e cache estava frio | Mude o cadastro no BioDoc para enviar **código** em vez de nome (seção 2.1). |
+| Pessoa entra em `001` (Unimed) em vez da sub-org esperada | `reguiredName`/`operador` em branco ou nome errado | Conferir cadastro; usar `scripts/list_person_orgs.py` para checar nomes válidos. |
+| Nome de grupo não resolve após boot | Cache frio ou grupo criado após boot | Aguardar warmup ou `python scripts/list_person_orgs.py --refresh`. |
 | Sub-org criada agora não é reconhecida | Cache desatualizado (TTL 30 min) | `python scripts/list_person_orgs.py --refresh` ou reinicie o container. |
 | `hasAuthority: "0"` no GET | Sub-org não tem porta vinculada no painel desktop | Acesse o painel e vincule as portas à sub-org. |
 | Foto recebida do BioDoc rejeitada pelo Defense | Imagem fora do padrão Defense IA (resolução, ângulo) | O BioDoc real tem liveness; em testes use `scripts/download_test_face.py` com resolução >= 720x720. |
@@ -353,7 +368,7 @@ painel desktop vinculou à sub-org `Corb`.
 |---|---|
 | `src/services/biodoc_client.py` | Lê `reguiredName` da resposta `/integrations/log/{reference_Id}` |
 | `src/services/biodoc_webhook_service.py` | Orquestra resolução `reguiredName → orgCode` |
-| `src/services/defense_ia_client.py` | `list_person_orgs()`, `resolve_org_code()`, `build_person_payload()` |
+| `src/services/defense_ia_client.py` | `list_person_groups()`, `list_available_orgs()`, `resolve_org_code()`, `build_person_payload()` |
 | `scripts/list_person_orgs.py` | CLI para listar sub-orgs e refrescar cache |
 | `tests/test_defense_ia_client.py` | Testes do cache, atalho de código e payload |
 | `tests/test_webhook_biodoc.py` | Testes do fluxo end-to-end (mockado) |

@@ -1,9 +1,10 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from src.core.logging import logger
+from src.core.logging import keep_alive_logger, logger
 from src.services.biodoc_client import BiodocClient
 from src.services.defense_ia_client import (
     DefenseIAClient,
@@ -51,12 +52,15 @@ async def lifespan(app: FastAPI):
     app.state.defense_client = build_defense_client_from_env()
     if app.state.defense_client.settings.enabled:
         await app.state.defense_client.start()
-        logger.info(
-            "Defense IA client started (token: %s)",
+        keep_alive_logger.info(
+            "[KEEP_ALIVE] client started (token: %s)",
             "ok" if app.state.defense_client.is_ready else "pending — retrying in background",
         )
+        asyncio.create_task(app.state.defense_client.warmup_org_cache())
     else:
-        logger.warning("Defense IA client disabled: missing environment settings")
+        keep_alive_logger.warning(
+            "[KEEP_ALIVE] client disabled: missing environment settings"
+        )
 
     app.state.biodoc_client = build_biodoc_client_from_env()
     await app.state.biodoc_client.start()

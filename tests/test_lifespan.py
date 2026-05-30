@@ -19,6 +19,9 @@ class FakeDefenseClient:
     async def close(self) -> None:
         self.closed = True
 
+    async def warmup_org_cache(self) -> None:
+        return None
+
 
 class FakeBiodocClient:
     def __init__(self) -> None:

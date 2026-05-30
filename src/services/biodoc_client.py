@@ -31,6 +31,20 @@ class CardMainImageData:
 
 
 @dataclass
+class ExternalAuditEntry:
+    """Entrada retornada por GET /logs/external-audits."""
+
+    id: int | str | None
+    id_card: str
+    name: str | None
+    status: str | None
+    date: str | None
+    required: int | None
+    required_name: str | None
+    description: str | None
+
+
+@dataclass
 class IntegrationLogData:
     """Dados retornados pelo endpoint GET /integrations/log/{reference_id}.
 
@@ -50,6 +64,71 @@ class IntegrationLogData:
     main_image: str | None
     path: str | None
     required_name: str | None
+    operador: str | None = None
+    local_token: str | None = None
+
+
+def _extract_local_token_from_log_record(data: dict[str, object]) -> str | None:
+    """Local Token do log BioDoc (ex.: 'CHU - ESPAÇO VIVER BEM')."""
+    json_block = data.get("json")
+    if not isinstance(json_block, dict):
+        return None
+    raw = json_block.get("Local Token") or json_block.get("localToken")
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
+def _extract_operador_from_log_record(data: dict[str, object]) -> str | None:
+    """Operador pode vir em `detail` (JSON string ou dict) ou em `json.Operador`."""
+    detail = data.get("detail")
+    if isinstance(detail, dict):
+        raw = detail.get("operador") or detail.get("operator") or detail.get("grupo")
+        if raw is not None:
+            value = str(raw).strip()
+            if value:
+                return value
+    if isinstance(detail, str) and detail.strip():
+        try:
+            parsed = json.loads(detail)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            raw = parsed.get("operador") or parsed.get("operator") or parsed.get("grupo")
+            if raw is not None:
+                value = str(raw).strip()
+                if value:
+                    return value
+
+    json_block = data.get("json")
+    if isinstance(json_block, dict):
+        raw = json_block.get("Operador") or json_block.get("operador")
+        if raw is not None:
+            value = str(raw).strip()
+            if value:
+                return value
+
+    return None
+
+
+def _unwrap_biodoc_payload(body: object) -> dict[str, object]:
+    """BioDoc pode retornar campos na raiz ou dentro de `data`."""
+    if not isinstance(body, dict):
+        return {}
+    nested = body.get("data")
+    if isinstance(nested, dict):
+        return nested
+    return body
+
+
+def _coerce_active_status(raw: object) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    try:
+        return int(raw) in (1, 2)
+    except (TypeError, ValueError):
+        return bool(raw)
 
 
 class BiodocClient:
@@ -132,18 +211,117 @@ class BiodocClient:
                 "Resposta inválida da API BioDoc (JSON malformado)"
             ) from exc
 
-        data = body.get("data", {})
-        if not isinstance(data, dict):
+        data = _unwrap_biodoc_payload(body)
+        if not data:
             raise BiodocAPIUnavailableError(
-                "Resposta da API BioDoc sem campo 'data' válido"
+                "Resposta da API BioDoc em formato inesperado (objeto vazio)"
             )
+
+        status_raw = data.get("status", data.get("cardStatus"))
+        image = data.get("image") or data.get("mainImage") or data.get("base64Image")
 
         return CardMainImageData(
             name=str(data.get("name") or ""),
-            card=str(data.get("card") or card),
-            status=bool(data.get("status", False)),
-            image=data.get("image") or None,
+            card=str(data.get("card") or data.get("idCard") or card),
+            status=_coerce_active_status(status_raw),
+            image=str(image) if image else None,
         )
+
+    async def get_external_audits(
+        self,
+        id_card: str,
+        *,
+        initial_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[ExternalAuditEntry]:
+        """
+        GET /logs/external-audits?idCard=<card>&initialDate=&endDate=
+
+        Lista auditorias/interações do beneficiário no intervalo informado.
+        """
+        if self._client is None:
+            raise BiodocAPIUnavailableError("BiodocClient não iniciado")
+
+        params: dict[str, str] = {"idCard": id_card}
+        if initial_date:
+            params["initialDate"] = initial_date
+        if end_date:
+            params["endDate"] = end_date
+
+        logger.info(
+            "[BIODOC OUT] GET /logs/external-audits idCard=%s initialDate=%s endDate=%s",
+            id_card,
+            initial_date,
+            end_date,
+        )
+        try:
+            response = await self._client.get("/logs/external-audits", params=params)
+        except httpx.TimeoutException as exc:
+            raise BiodocAPIUnavailableError(
+                f"Timeout ao consultar BioDoc external-audits (idCard={id_card})"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise BiodocAPIUnavailableError(
+                f"Erro de rede ao consultar BioDoc external-audits (idCard={id_card}): {exc}"
+            ) from exc
+
+        logger.info(
+            "[BIODOC IN] GET /logs/external-audits idCard=%s status=%d",
+            id_card,
+            response.status_code,
+        )
+
+        if response.status_code == 401:
+            raise BiodocAPIUnauthorizedError("BIODOC_TOKEN_API recusado pela API BioDoc")
+
+        if not response.is_success:
+            logger.warning(
+                "[BIODOC IN] body status=%d idCard=%s body=%s",
+                response.status_code,
+                id_card,
+                response.text[:500],
+            )
+            raise BiodocAPIUnavailableError(
+                f"API BioDoc retornou status inesperado {response.status_code} "
+                f"para external-audits idCard={id_card}"
+            )
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise BiodocAPIUnavailableError(
+                "Resposta inválida da API BioDoc (JSON malformado)"
+            ) from exc
+
+        data = _unwrap_biodoc_payload(body)
+        raw_logs = data.get("logs") if data else None
+        if not isinstance(raw_logs, list):
+            return []
+
+        entries: list[ExternalAuditEntry] = []
+        for item in raw_logs:
+            if not isinstance(item, dict):
+                continue
+            entries.append(
+                ExternalAuditEntry(
+                    id=item.get("id"),  # type: ignore[arg-type]
+                    id_card=str(item.get("id_Card") or item.get("idCard") or id_card),
+                    name=str(item.get("name") or "") or None,
+                    status=str(item.get("status") or "") or None,
+                    date=str(item.get("date") or "") or None,
+                    required=item.get("required"),  # type: ignore[arg-type]
+                    required_name=str(item.get("required_Name") or item.get("requiredName") or "")
+                    or None,
+                    description=str(item.get("description") or "") or None,
+                )
+            )
+
+        logger.info(
+            "[BIODOC IN] external-audits idCard=%s count=%d",
+            id_card,
+            len(entries),
+        )
+        return entries
 
     async def get_integration_log(self, reference_id: str) -> IntegrationLogData:
         """
@@ -212,23 +390,37 @@ class BiodocClient:
         except (TypeError, ValueError):
             logger.info("[BIODOC IN] body reference_id=%s json=<unserializable>", reference_id)
 
-        if not isinstance(body, dict):
+        data = _unwrap_biodoc_payload(body)
+        if not data:
             raise BiodocAPIUnavailableError(
                 "Resposta da API BioDoc em formato inesperado (esperado objeto JSON)"
             )
 
-        id_card = str(body.get("id_Card") or "")
+        id_card = str(data.get("id_Card") or data.get("idCard") or "")
         if not id_card:
             raise BiodocAPIUnavailableError(
                 f"Resposta da API BioDoc sem campo 'id_Card' (reference_id={reference_id})"
             )
 
+        operador = _extract_operador_from_log_record(data)
+        local_token = _extract_local_token_from_log_record(data)
+        logger.info(
+            "[BIODOC IN] log reference_id=%s detail=%s json=%s operador=%r local_token=%r",
+            reference_id,
+            "present" if data.get("detail") else "absent",
+            "present" if data.get("json") else "absent",
+            operador,
+            local_token,
+        )
+
         return IntegrationLogData(
-            id=body.get("id"),
+            id=data.get("id"),  # type: ignore[arg-type]
             id_card=id_card,
-            name=str(body.get("name") or ""),
-            status=int(body.get("status") or 0),
-            main_image=body.get("mainImage") or None,
-            path=body.get("path") or None,
-            required_name=body.get("reguiredName") or None,
+            name=str(data.get("name") or data.get("userName") or ""),
+            status=int(data.get("status") or 0),
+            main_image=data.get("mainImage") or None,  # type: ignore[arg-type]
+            path=data.get("path") or None,  # type: ignore[arg-type]
+            required_name=data.get("requiredName") or data.get("reguiredName") or None,  # type: ignore[arg-type]
+            operador=operador,
+            local_token=local_token,
         )

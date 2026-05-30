@@ -9,6 +9,8 @@ from src.services.defense_ia_client import (
     BRMS_AUTHORIZE,
     BRMS_KEEPALIVE,
     BRMS_PERSON,
+    BRMS_PERSON_DELETE_BATCH,
+    BRMS_PERSON_GROUP_LIST,
     DefenseIAClient,
     DefenseIAError,
     DefenseIASettings,
@@ -403,32 +405,26 @@ async def test_brms_put_preserves_face_on_update_without_biometrics():
     assert put_bodies[0]["baseInfo"]["facePictures"] == ["foto-existente"]
 
 
-def _make_person_page_response(
-    page_data: list[dict], *, code: int | str = 1000
+def _make_person_group_list_response(
+    results: list[dict], *, code: int | str = 1000
 ) -> httpx.Response:
     return httpx.Response(
         200,
-        json={"code": code, "data": {"pageData": page_data, "totalCount": str(len(page_data))}},
+        json={"code": code, "data": {"results": results}},
     )
 
 
+PERSON_PAGE_PATH = "/obms/api/v1.1/acs/person/page"
+
+
 @pytest.mark.asyncio
-async def test_list_person_orgs_pages_and_caches():
-    """Paginação completa + cache: segunda chamada não repagina."""
-    page_calls: list[dict] = []
+async def test_list_person_groups_caches():
+    """GET person-group/list + cache: segunda chamada não refaz HTTP."""
+    group_calls = 0
     authorize_hits = 0
 
-    page1 = [
-        {"baseInfo": {"orgCode": "001", "orgName": "Unimed"}},
-        {"baseInfo": {"orgCode": "001015001", "orgName": "Corb"}},
-    ]
-    page2 = [
-        {"baseInfo": {"orgCode": "001008", "orgName": "Colaboradores"}},
-        {"baseInfo": {"orgCode": "001015001", "orgName": "Corb"}},  # duplicado, ignorado
-    ]
-
     async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal authorize_hits
+        nonlocal group_calls, authorize_hits
         if request.url.path == BRMS_AUTHORIZE:
             authorize_hits += 1
             if authorize_hits == 1:
@@ -437,30 +433,14 @@ async def test_list_person_orgs_pages_and_caches():
                     json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
                 )
             return httpx.Response(200, json={"code": 1000, "token": "t"})
-        if request.url.path == "/obms/api/v1.1/acs/person/page":
-            params = dict(request.url.params)
-            page_calls.append(params)
-            page_num = int(params.get("page", "1"))
-            # Simula pageSize grande: a varredura faz N páginas até voltar < pageSize
-            if page_num == 1:
-                # Retorna pageSize completo -> avança
-                return httpx.Response(
-                    200,
-                    json={
-                        "code": 1000,
-                        "data": {"pageData": page1 * 100, "totalCount": "400"},
-                    },
-                )
-            if page_num == 2:
-                return httpx.Response(
-                    200,
-                    json={
-                        "code": 1000,
-                        "data": {"pageData": page2, "totalCount": "400"},
-                    },
-                )
-            return httpx.Response(
-                200, json={"code": 1000, "data": {"pageData": [], "totalCount": "0"}}
+        if request.url.path == BRMS_PERSON_GROUP_LIST:
+            group_calls += 1
+            return _make_person_group_list_response(
+                [
+                    {"orgCode": "001", "orgName": "Unimed"},
+                    {"orgCode": "001015001", "orgName": "Corb"},
+                    {"orgCode": "001008", "orgName": "Colaboradores"},
+                ]
             )
         return httpx.Response(404)
 
@@ -468,9 +448,9 @@ async def test_list_person_orgs_pages_and_caches():
     client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
     try:
         await client.login()
-        orgs1 = await client.list_person_orgs()
-        page_calls_first = list(page_calls)
-        orgs2 = await client.list_person_orgs()
+        orgs1 = await client.list_person_groups()
+        group_calls_first = group_calls
+        orgs2 = await client.list_person_groups()
     finally:
         await client.close()
         await http_client.aclose()
@@ -481,30 +461,22 @@ async def test_list_person_orgs_pages_and_caches():
         "colaboradores": "001008",
     }
     assert orgs2 == orgs1
-    # Cache: segunda chamada não dispara mais paginação.
-    assert page_calls == page_calls_first
-    # Confirmamos que paginou ao menos 2 vezes.
-    assert any(p.get("page") == "2" for p in page_calls_first)
+    assert group_calls == group_calls_first == 1
 
 
 @pytest.mark.asyncio
 async def test_resolve_org_code_returns_digits_directly_without_api_call():
-    """Se o BioDoc enviar `reguiredName` puramente numérico, usamos como orgCode."""
-    page_calls = 0
+    """Se o BioDoc enviar código puramente numérico, usamos como orgCode sem API."""
+    api_calls = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal page_calls
-        if request.url.path == BRMS_AUTHORIZE:
-            return httpx.Response(200, json={"code": 1000, "token": "t"})
-        if request.url.path == "/obms/api/v1.1/acs/person/page":
-            page_calls += 1
-            return httpx.Response(404)
+        nonlocal api_calls
+        api_calls += 1
         return httpx.Response(404)
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
     try:
-        # Não precisa nem fazer login — o atalho de dígitos não toca a API.
         assert await client.resolve_org_code("001015001") == "001015001"
         assert await client.resolve_org_code("  001008  ") == "001008"
         assert await client.resolve_org_code("123") == "123"
@@ -512,23 +484,17 @@ async def test_resolve_org_code_returns_digits_directly_without_api_call():
         await client.close()
         await http_client.aclose()
 
-    assert page_calls == 0
+    assert api_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_resolve_org_code_lookup_case_insensitive_and_no_refresh_on_miss():
-    """Lookup case-insensitive; miss retorna None sem refrescar cache.
-
-    O refresh on-miss seria caro demais em produção (paginação completa
-    de pessoas leva ~3 min no servidor da Unimed). Quando uma sub-org for
-    criada no painel após o boot, o admin chama `list_person_orgs(force_refresh=True)`
-    explicitamente.
-    """
-    refresh_count = 0
+    """Lookup case-insensitive; miss retorna None sem refetch do person-group/list."""
+    group_calls = 0
     authorize_hits = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal authorize_hits, refresh_count
+        nonlocal authorize_hits, group_calls
         if request.url.path == BRMS_AUTHORIZE:
             authorize_hits += 1
             if authorize_hits == 1:
@@ -537,20 +503,13 @@ async def test_resolve_org_code_lookup_case_insensitive_and_no_refresh_on_miss()
                     json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
                 )
             return httpx.Response(200, json={"code": 1000, "token": "t"})
-        if request.url.path == "/obms/api/v1.1/acs/person/page":
-            page_num = int(dict(request.url.params).get("page", "1"))
-            if page_num != 1:
-                return httpx.Response(
-                    200, json={"code": 1000, "data": {"pageData": []}}
-                )
-            refresh_count += 1
-            page_data = [
-                {"baseInfo": {"orgCode": "001", "orgName": "Unimed"}},
-                {"baseInfo": {"orgCode": "001015001", "orgName": "Corb"}},
-            ]
-            return httpx.Response(
-                200,
-                json={"code": 1000, "data": {"pageData": page_data, "totalCount": "2"}},
+        if request.url.path == BRMS_PERSON_GROUP_LIST:
+            group_calls += 1
+            return _make_person_group_list_response(
+                [
+                    {"orgCode": "001", "orgName": "Unimed"},
+                    {"orgCode": "001015001", "orgName": "Corb"},
+                ]
             )
         return httpx.Response(404)
 
@@ -558,15 +517,11 @@ async def test_resolve_org_code_lookup_case_insensitive_and_no_refresh_on_miss()
     client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
     try:
         await client.login()
-        # 1ª resolução paga a varredura única e popula cache
         assert await client.resolve_org_code("UNIMED") == "001"
-        # Demais lookups consultam apenas o cache (case-insensitive, trim)
         assert await client.resolve_org_code("Corb") == "001015001"
         assert await client.resolve_org_code("  corb  ") == "001015001"
-        # Nome desconhecido NÃO força nova varredura — só cai pra None
         assert await client.resolve_org_code("Inexistente") is None
         assert await client.resolve_org_code("OutroDesconhecido") is None
-        # Vazio/None retorna None sem chamar API
         assert await client.resolve_org_code(None) is None
         assert await client.resolve_org_code("") is None
         assert await client.resolve_org_code("   ") is None
@@ -574,17 +529,17 @@ async def test_resolve_org_code_lookup_case_insensitive_and_no_refresh_on_miss()
         await client.close()
         await http_client.aclose()
 
-    assert refresh_count == 1
+    assert group_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_list_person_orgs_force_refresh_repaginates():
-    """Permite ao admin invalidar o cache explicitamente."""
-    refresh_count = 0
+async def test_list_person_groups_force_refresh():
+    """Permite invalidar o cache explicitamente."""
+    group_calls = 0
     authorize_hits = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal authorize_hits, refresh_count
+        nonlocal authorize_hits, group_calls
         if request.url.path == BRMS_AUTHORIZE:
             authorize_hits += 1
             if authorize_hits == 1:
@@ -593,22 +548,10 @@ async def test_list_person_orgs_force_refresh_repaginates():
                     json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
                 )
             return httpx.Response(200, json={"code": 1000, "token": "t"})
-        if request.url.path == "/obms/api/v1.1/acs/person/page":
-            page_num = int(dict(request.url.params).get("page", "1"))
-            if page_num != 1:
-                return httpx.Response(
-                    200, json={"code": 1000, "data": {"pageData": []}}
-                )
-            refresh_count += 1
-            return httpx.Response(
-                200,
-                json={
-                    "code": 1000,
-                    "data": {
-                        "pageData": [{"baseInfo": {"orgCode": "001", "orgName": "Unimed"}}],
-                        "totalCount": "1",
-                    },
-                },
+        if request.url.path == BRMS_PERSON_GROUP_LIST:
+            group_calls += 1
+            return _make_person_group_list_response(
+                [{"orgCode": "001", "orgName": "Unimed"}]
             )
         return httpx.Response(404)
 
@@ -616,11 +559,262 @@ async def test_list_person_orgs_force_refresh_repaginates():
     client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
     try:
         await client.login()
-        await client.list_person_orgs()
-        await client.list_person_orgs()  # cache hit
-        await client.list_person_orgs(force_refresh=True)
+        await client.list_person_groups()
+        await client.list_person_groups()  # cache hit
+        await client.list_person_groups(force_refresh=True)
     finally:
         await client.close()
         await http_client.aclose()
 
-    assert refresh_count == 2
+    assert group_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_list_available_orgs_empty_does_not_call_person_page():
+    """Lista vazia de person-group/list não dispara varredura person/page."""
+    group_calls = 0
+    page_calls = 0
+    authorize_hits = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal group_calls, page_calls, authorize_hits
+        if request.url.path == BRMS_AUTHORIZE:
+            authorize_hits += 1
+            if authorize_hits == 1:
+                return httpx.Response(
+                    401,
+                    json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
+                )
+            return httpx.Response(200, json={"code": 1000, "token": "t"})
+        if request.url.path == BRMS_PERSON_GROUP_LIST:
+            group_calls += 1
+            return httpx.Response(200, json={"code": 1000, "data": {"results": []}})
+        if request.url.path == PERSON_PAGE_PATH:
+            page_calls += 1
+            return httpx.Response(404)
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    try:
+        await client.login()
+        orgs, source = await client.list_available_orgs(force_refresh=True)
+        assert orgs == {}
+        assert source == "person-group/list"
+        assert await client.resolve_org_code("Corb") is None
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert group_calls >= 1
+    assert page_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_code_prefers_person_group_list():
+    group_calls = 0
+    page_calls = 0
+    authorize_hits = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal group_calls, page_calls, authorize_hits
+        if request.url.path == BRMS_AUTHORIZE:
+            authorize_hits += 1
+            if authorize_hits == 1:
+                return httpx.Response(
+                    401,
+                    json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
+                )
+            return httpx.Response(200, json={"code": 1000, "token": "t"})
+        if request.url.path == BRMS_PERSON_GROUP_LIST:
+            group_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"orgCode": "001002", "orgName": "CHU Central"},
+                        {"orgCode": "001003", "orgName": "Refeitorio"},
+                    ]
+                },
+            )
+        if request.url.path == PERSON_PAGE_PATH:
+            page_calls += 1
+            return httpx.Response(404)
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    try:
+        await client.login()
+        assert await client.resolve_org_code("Refeitorio") == "001003"
+        assert await client.resolve_org_code("chu central") == "001002"
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert group_calls >= 1
+    assert page_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_parse_org_name_code_pairs_from_results_key():
+    from src.services.defense_ia_client import _parse_org_name_code_pairs
+
+    body = {
+        "code": 1000,
+        "data": {
+            "results": [
+                {"orgCode": "001008", "orgName": "Colaboradores"},
+                {"orgCode": "001015001", "orgName": "Corb"},
+            ]
+        },
+    }
+    orgs = _parse_org_name_code_pairs(body)
+    assert orgs["colaboradores"] == "001008"
+    assert orgs["corb"] == "001015001"
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_code_from_person_group_results():
+    """Resolve nomes via person-group/list (data.results), sem person/page."""
+    group_calls = 0
+    page_calls = 0
+    authorize_hits = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal group_calls, page_calls, authorize_hits
+        if request.url.path == BRMS_AUTHORIZE:
+            authorize_hits += 1
+            if authorize_hits == 1:
+                return httpx.Response(
+                    401,
+                    json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
+                )
+            return httpx.Response(200, json={"code": 1000, "token": "t"})
+        if request.url.path == BRMS_PERSON_GROUP_LIST:
+            group_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "code": 1000,
+                    "data": {
+                        "results": [
+                            {"orgCode": "001008", "orgName": "Colaboradores"},
+                            {"orgCode": "001015001", "orgName": "Corb"},
+                        ]
+                    },
+                },
+            )
+        if request.url.path == PERSON_PAGE_PATH:
+            page_calls += 1
+            return httpx.Response(404)
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    try:
+        await client.login()
+        assert await client.resolve_org_code("colaboradores") == "001008"
+        assert await client.resolve_org_code("Corb") == "001015001"
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert group_calls >= 1
+    assert page_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_person_put_updates_org_code_in_payload():
+    put_bodies: list[dict] = []
+    get_count = 0
+    authorize_hits = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_count, authorize_hits
+        if request.url.path == BRMS_AUTHORIZE:
+            authorize_hits += 1
+            if authorize_hits == 1:
+                return httpx.Response(
+                    401,
+                    json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
+                )
+            return httpx.Response(200, json={"code": 1000, "token": "t"})
+        if request.url.path == brms_person_path("123") and request.method == "GET":
+            get_count += 1
+            if get_count == 1:
+                return httpx.Response(
+                    200,
+                    json={"code": 1000, "data": {"baseInfo": {"orgCode": "001"}}},
+                )
+            return httpx.Response(
+                200,
+                json={"code": 1000, "data": {"baseInfo": {"orgCode": "001008"}}},
+            )
+        if request.url.path == brms_person_path("123") and request.method == "PUT":
+            put_bodies.append(json.loads(request.content.decode()))
+            return httpx.Response(200, json={"code": 1000})
+        return httpx.Response(404)
+
+    request = sync_payload()
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    try:
+        await client.login()
+        await client.sync_person(request, "001008")
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert len(put_bodies) == 1
+    assert put_bodies[0]["baseInfo"]["orgCode"] == "001008"
+
+
+@pytest.mark.asyncio
+async def test_sync_person_delete_recreate_when_put_does_not_change_org():
+    put_calls = 0
+    post_calls: list[str] = []
+    delete_calls = 0
+    get_count = 0
+    authorize_hits = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal put_calls, delete_calls, get_count, authorize_hits
+        if request.url.path == BRMS_AUTHORIZE:
+            authorize_hits += 1
+            if authorize_hits == 1:
+                return httpx.Response(
+                    401,
+                    json={"realm": "r", "randomKey": "k", "encryptType": "MD5"},
+                )
+            return httpx.Response(200, json={"code": 1000, "token": "t"})
+        if request.url.path == brms_person_path("123") and request.method == "GET":
+            get_count += 1
+            return httpx.Response(
+                200,
+                json={"code": 1000, "data": {"baseInfo": {"orgCode": "001"}}},
+            )
+        if request.url.path == brms_person_path("123") and request.method == "PUT":
+            put_calls += 1
+            return httpx.Response(200, json={"code": 1000})
+        if request.url.path == BRMS_PERSON_DELETE_BATCH:
+            delete_calls += 1
+            return httpx.Response(200, json={"code": 1000})
+        if request.url.path == BRMS_PERSON and request.method == "POST":
+            post_calls.append(request.url.path)
+            return httpx.Response(200, json={"code": 1000, "created": True})
+        return httpx.Response(404)
+
+    request = sync_payload()
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    try:
+        await client.login()
+        await client.sync_person(request, "001008")
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert put_calls == 1
+    assert delete_calls == 1
+    assert post_calls == [BRMS_PERSON]

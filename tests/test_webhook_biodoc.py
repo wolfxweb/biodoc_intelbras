@@ -25,8 +25,11 @@ from src.services.biodoc_client import (
     BiodocAPIUnavailableError,
     BiodocAPIUnauthorizedError,
     BiodocClient,
+    CardMainImageData,
+    ExternalAuditEntry,
     IntegrationLogData,
 )
+from src.services.biodoc_webhook_service import parse_redirect_response_success
 from src.services.defense_ia_client import (
     DefenseIAArgumentError,
     DefenseIASettings,
@@ -86,6 +89,13 @@ def _make_biodoc_mock(
         path=None,
         required_name=required_name,
     )
+    client.get_card_mainimage.return_value = CardMainImageData(
+        name=name,
+        card=id_card,
+        status=True,
+        image=main_image,
+    )
+    client.get_external_audits.return_value = []
     return client
 
 
@@ -130,7 +140,8 @@ async def webhook_client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Webh
 
 
 @pytest.mark.asyncio
-async def test_webhook_missing_token(monkeypatch: pytest.MonkeyPatch):
+async def test_webhook_missing_token_is_accepted(monkeypatch: pytest.MonkeyPatch):
+    """Fluxo urlWebhook BioDoc pode POST sem Authorization."""
     monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
 
     defense_mock = _make_defense_mock()
@@ -140,11 +151,15 @@ async def test_webhook_missing_token(monkeypatch: pytest.MonkeyPatch):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post("/webhook/biodoc", json=VALID_PAYLOAD)
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post("/webhook/biodoc", json=VALID_PAYLOAD)
 
     app.dependency_overrides.clear()
-    assert response.status_code == 401
-    assert "Authorization" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
 
 
 @pytest.mark.asyncio
@@ -175,16 +190,18 @@ async def test_webhook_wrong_token(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_webhook_success_false_returns_422(webhook_client: WebhookFixture):
+async def test_webhook_success_false_returns_ignored(webhook_client: WebhookFixture):
     payload = {**VALID_PAYLOAD, "success": False}
     response = await webhook_client.client.post("/webhook/biodoc", json=payload, headers=VALID_HEADERS)
-    assert response.status_code == 422
-    assert "success=false" in response.json()["detail"]
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ignored"
+    assert body["defense_sync"] == "skipped"
 
 
 @pytest.mark.asyncio
 async def test_webhook_missing_reference_id_returns_422(webhook_client: WebhookFixture):
-    payload = {**VALID_PAYLOAD, "reference_Id": None}
+    payload = {**VALID_PAYLOAD, "reference_Id": None, "id_Log": None}
     response = await webhook_client.client.post("/webhook/biodoc", json=payload, headers=VALID_HEADERS)
     assert response.status_code == 422
     assert "reference_Id" in response.json()["detail"]
@@ -316,6 +333,62 @@ async def test_webhook_skips_resolve_when_required_name_missing(
     assert response.status_code == 200
     defense_mock.resolve_org_code.assert_not_awaited()
     assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001"
+
+
+@pytest.mark.asyncio
+async def test_webhook_maps_org_code_from_details_operador(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    defense_mock = _make_defense_mock(resolved_org_code="001015001")
+    biodoc_mock = _make_biodoc_mock(required_name="EmpresaDesconhecida")
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    payload = {
+        **VALID_PAYLOAD,
+        "details": {"operador": "VIVER"},
+    }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post("/webhook/biodoc", json=payload, headers=VALID_HEADERS)
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001015001"
+    defense_mock.resolve_org_code.assert_awaited_once_with("VIVER")
+
+
+@pytest.mark.asyncio
+async def test_webhook_query_operador_is_ignored(monkeypatch: pytest.MonkeyPatch):
+    """?operador= na URL do webhook não deve alterar orgCode (fonte: integrations/log)."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    defense_mock = _make_defense_mock(resolved_org_code="001015001")
+    biodoc_mock = _make_biodoc_mock(required_name="EmpresaDesconhecida")
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc?operador=VIVER",
+                json=VALID_PAYLOAD,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001015001"
+    defense_mock.resolve_org_code.assert_awaited_once_with("EmpresaDesconhecida")
 
 
 # ---------------------------------------------------------------------------
@@ -452,3 +525,570 @@ async def test_webhook_defense_ia_bad_image_returns_422(monkeypatch: pytest.Monk
     app.dependency_overrides.clear()
     assert response.status_code == 422
     assert "Biometria" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# GET /webhook/biodoc/redirect (homolog / redirect browser)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_redirect_response_success():
+    assert parse_redirect_response_success("200") is True
+    assert parse_redirect_response_success("404") is False
+    assert parse_redirect_response_success(None) is True
+
+
+@pytest.mark.asyncio
+async def test_redirect_no_token_is_accepted(monkeypatch: pytest.MonkeyPatch):
+    """Token ausente não é mais bloqueado — rota é pública."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="123",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.get(
+                "/webhook/biodoc/redirect",
+                params={"card": "123", "response": "200"},
+            )
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_redirect_wrong_token_is_accepted(monkeypatch: pytest.MonkeyPatch):
+    """Token inválido não é mais bloqueado — rota é pública."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="123",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.get(
+                "/webhook/biodoc/redirect",
+                params={"token": "qualquer-coisa", "card": "123", "response": "200"},
+            )
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_redirect_by_reference_id_success(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    defense_mock = _make_defense_mock()
+    biodoc_mock = _make_biodoc_mock()
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.get(
+                "/webhook/biodoc/redirect",
+                params={
+                    "token": WEBHOOK_TOKEN,
+                    "reference_Id": VALID_PAYLOAD["reference_Id"],
+                    "response": "200",
+                    "message": "Face Reconhecida",
+                },
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["defense_sync"] == "ok"
+    biodoc_mock.get_integration_log.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_redirect_by_card_success(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="00271368992672000",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.get(
+                "/webhook/biodoc/redirect",
+                params={
+                    "token": WEBHOOK_TOKEN,
+                    "card": "00271368992672000",
+                    "response": "200",
+                    "message": "Face Reconhecida",
+                    "date": "28/05/2026 14:39:46",
+                },
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["external_id"] == "00271368992672000"
+    biodoc_mock.get_card_mainimage.assert_awaited_once_with("00271368992672000")
+    defense_mock.sync_person.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_redirect_malformed_double_question_mark(monkeypatch: pytest.MonkeyPatch):
+    """BioDoc concatena ?card= quando a callback já tem query params."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="00271368992672000",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.get(
+                "/webhook/biodoc/redirect"
+                "?token=test-webhook-token&card=00271368992672000"
+                "?card=00271368992672000&date=28/05/2026%2014:48:05"
+                "&response=200&message=Face%20Reconhecida&justifyId=null&idTransaction=undefined"
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["external_id"] == "00271368992672000"
+
+
+@pytest.mark.asyncio
+async def test_redirect_failed_response_skips_sync(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    defense_mock = _make_defense_mock()
+    biodoc_mock = _make_biodoc_mock()
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/webhook/biodoc/redirect",
+            params={"token": WEBHOOK_TOKEN, "card": "123", "response": "500"},
+        )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored"
+    defense_mock.sync_person.assert_not_called()
+
+
+NEW_FORMAT_PAYLOAD = {
+    "success": True,
+    "message": "Face Reconhecida",
+    "card": "00271368992672000",
+    "image": "https://example.com/capture.png",
+    "response": 200,
+    "confidence": "61.00%",
+}
+
+
+@pytest.mark.asyncio
+async def test_webhook_card_image_uses_mainimage_name(monkeypatch: pytest.MonkeyPatch):
+    """POST urlWebhook (card+image): nome vem do mainimage, foto do payload."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc",
+                json=NEW_FORMAT_PAYLOAD,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+
+    biodoc_mock.get_card_mainimage.assert_awaited_once_with("00271368992672000")
+    biodoc_mock.get_external_audits.assert_awaited_once()
+    biodoc_mock.get_integration_log.assert_not_awaited()
+
+    sync_req = defense_mock.sync_person.await_args[0][0]
+    assert sync_req.person.full_name == "CARLOS EDUARDO LOBO"
+    assert sync_req.external_id == "00271368992672000"
+
+
+@pytest.mark.asyncio
+async def test_webhook_log_id_takes_priority_over_card_image(monkeypatch: pytest.MonkeyPatch):
+    """logId no payload deve usar /integrations/log (operador, nome completo)."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+    biodoc_mock.get_integration_log.return_value = IntegrationLogData(
+        id="log-uuid",
+        id_card="00271368992672000",
+        name="CARLOS EDUARDO LOBO",
+        status=2,
+        main_image="https://example.com/face.jpg",
+        path=None,
+        required_name=None,
+        operador="VIVER",
+    )
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    payload = {
+        **NEW_FORMAT_PAYLOAD,
+        "logId": "log-uuid",
+    }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc",
+                json=payload,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    biodoc_mock.get_integration_log.assert_awaited_once_with("log-uuid")
+    biodoc_mock.get_card_mainimage.assert_not_awaited()
+    defense_mock.resolve_org_code.assert_awaited_once_with("VIVER")
+
+
+@pytest.mark.asyncio
+async def test_webhook_local_token_fallback_when_operador_unmapped(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    async def resolve_side_effect(name: str | None) -> str | None:
+        if name == "VIVER":
+            return None
+        if name == "CHU - ESPAÇO VIVER BEM":
+            return "001002"
+        return None
+
+    defense_mock = _make_defense_mock()
+    defense_mock.resolve_org_code.side_effect = resolve_side_effect
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+    biodoc_mock.get_integration_log.return_value = IntegrationLogData(
+        id="log-uuid",
+        id_card="00271368992672000",
+        name="CARLOS EDUARDO LOBO",
+        status=2,
+        main_image="https://example.com/face.jpg",
+        path=None,
+        required_name=None,
+        operador="VIVER",
+        local_token="CHU - ESPAÇO VIVER BEM",
+    )
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    payload = {
+        **NEW_FORMAT_PAYLOAD,
+        "logId": "log-uuid",
+    }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc",
+                json=payload,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert defense_mock.resolve_org_code.await_count == 2
+    assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001002"
+
+
+@pytest.mark.asyncio
+async def test_webhook_card_image_without_log_id_uses_default_org(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock(resolved_org_code=None)
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc",
+                json=NEW_FORMAT_PAYLOAD,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    biodoc_mock.get_integration_log.assert_not_awaited()
+    assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001"
+    defense_mock.resolve_org_code.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_webhook_card_image_query_operador_ignored_and_warns_without_log_id(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    import logging
+
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+    caplog.set_level(logging.WARNING, logger="biodoc_intelbras")
+
+    defense_mock = _make_defense_mock(resolved_org_code="001008")
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc?operador=colaboradores",
+                json=NEW_FORMAT_PAYLOAD,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert any("external-audits não resolveu operador" in r.message for r in caplog.records)
+    biodoc_mock.get_integration_log.assert_not_awaited()
+    defense_mock.resolve_org_code.assert_not_awaited()
+    assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001"
+
+
+@pytest.mark.asyncio
+async def test_webhook_card_image_details_query_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """?details= na URL do webhook não deve alterar orgCode (só verify + integrations/log)."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock(resolved_org_code="001008")
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc?details=%7B%22operador%22%3A%22colaboradores%22%7D",
+                json=NEW_FORMAT_PAYLOAD,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    defense_mock.resolve_org_code.assert_not_awaited()
+    assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001"
+
+
+@pytest.mark.asyncio
+async def test_webhook_card_image_resolves_operador_via_external_audits(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """card+image sem log id: external-audits → integrations/log resolve operador."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock(resolved_org_code="001008")
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+    biodoc_mock.get_external_audits.return_value = [
+        ExternalAuditEntry(
+            id=677,
+            id_card="00271368992672000",
+            name="CARLOS EDUARDO LOBO",
+            status="Autenticado",
+            date="2026-05-28T20:52:35Z",
+            required=28,
+            required_name="Colaboradores",
+            description=None,
+        )
+    ]
+    biodoc_mock.get_integration_log.return_value = IntegrationLogData(
+        id=677,
+        id_card="00271368992672000",
+        name="CARLOS EDUARDO LOBO",
+        status=2,
+        main_image="https://example.com/face.jpg",
+        path=None,
+        required_name=None,
+        operador="colaboradores",
+    )
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    payload = {
+        **NEW_FORMAT_PAYLOAD,
+        "date": "2026-05-28T20:52:35Z",
+    }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc",
+                json=payload,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    biodoc_mock.get_external_audits.assert_awaited_once()
+    biodoc_mock.get_integration_log.assert_awaited_once_with("677")
+    defense_mock.resolve_org_code.assert_awaited_once_with("colaboradores")
+    assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001008"
+
+
+@pytest.mark.asyncio
+async def test_webhook_card_image_external_audits_failure_keeps_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = _make_biodoc_mock(name="CARLOS EDUARDO LOBO", id_card="00271368992672000")
+    biodoc_mock.get_external_audits.side_effect = BiodocAPIUnavailableError("timeout")
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post(
+                "/webhook/biodoc",
+                json=NEW_FORMAT_PAYLOAD,
+                headers=VALID_HEADERS,
+            )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    biodoc_mock.get_integration_log.assert_not_awaited()
+    defense_mock.resolve_org_code.assert_not_awaited()
+    assert _extract_org_code_arg(defense_mock.sync_person.await_args) == "001"
+
+
+@pytest.mark.asyncio
+async def test_webhook_id_log_uses_integration_log(monkeypatch: pytest.MonkeyPatch):
+    """id_Log no POST deve acionar GET /integrations/log/{reference_Id}."""
+    monkeypatch.setenv("BIODOC_WEBHOOK_TOKEN", WEBHOOK_TOKEN)
+
+    defense_mock = _make_defense_mock(resolved_org_code="001015001")
+    biodoc_mock = _make_biodoc_mock()
+    biodoc_mock.get_integration_log.return_value = IntegrationLogData(
+        id=42,
+        id_card="1234567890",
+        name=MOCK_USER_NAME,
+        status=2,
+        main_image="https://example.com/face.jpg",
+        path=None,
+        required_name=None,
+        operador="VIVER",
+    )
+
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    payload = {
+        "success": True,
+        "status": 2,
+        "id_Log": 42,
+        "url": "https://example.com/face.jpg",
+    }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            response = await client.post("/webhook/biodoc", json=payload, headers=VALID_HEADERS)
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    biodoc_mock.get_integration_log.assert_awaited_once_with("42")
+    defense_mock.resolve_org_code.assert_awaited_once_with("VIVER")
