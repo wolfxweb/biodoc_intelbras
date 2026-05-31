@@ -10,7 +10,7 @@ from src.main import app
 
 
 @pytest.mark.asyncio
-async def test_defense_audit_logs_post_intelbras_ingress(
+async def test_webhook_audit_logs_post_biodoc_ingress(
     caplog: pytest.LogCaptureFixture,
 ):
     import logging
@@ -20,16 +20,16 @@ async def test_defense_audit_logs_post_intelbras_ingress(
     payload = {"event": "access", "deviceId": "cam-01"}
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post("/defense", json=payload)
+        response = await client.post("/webhook/biodoc", json=payload)
 
     assert response.status_code == 200
-    inbound = [r.message for r in caplog.records if "[DEFENSE IN]" in r.message]
-    assert any("POST /defense" in m for m in inbound)
+    inbound = [r.message for r in caplog.records if "[WEBHOOK IN]" in r.message]
+    assert any("POST /webhook/biodoc" in m for m in inbound)
     assert any("body:" in m for m in inbound)
 
 
 @pytest.mark.asyncio
-async def test_defense_audit_logs_get_biodoc_callback(
+async def test_webhook_audit_logs_get_biodoc_callback(
     caplog: pytest.LogCaptureFixture,
 ):
     import logging
@@ -56,13 +56,13 @@ async def test_defense_audit_logs_get_biodoc_callback(
         ):
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/defense",
+                    "/webhook/biodoc",
                     params={"card": "123", "response": "403"},
                 )
     finally:
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    inbound = [r.message for r in caplog.records if "[DEFENSE IN]" in r.message]
-    assert any("GET /defense" in m for m in inbound)
+    inbound = [r.message for r in caplog.records if "[WEBHOOK IN]" in r.message]
+    assert any("GET /webhook/biodoc" in m for m in inbound)
     assert any("HTTP 200" in m for m in inbound)

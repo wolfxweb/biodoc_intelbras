@@ -1,4 +1,4 @@
-"""Auditoria de ingress: GET/POST /defense (BioDoc callback e Intelbras)."""
+"""Auditoria de ingress: GET/POST /webhook/biodoc."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ _SENSITIVE_QUERY = re.compile(
     r"(?i)(^|&)(token|authorization|access_token|api_key)=([^&]*)"
 )
 
-_CAPTURE_PATH = "/defense"
-_LOG_TAG = "[DEFENSE IN]"
+_WEBHOOK_PATH = "/webhook/biodoc"
+_LOG_TAG = "[WEBHOOK IN]"
 
 
 def _redact_query_string(query: str) -> str:
@@ -54,11 +54,11 @@ def _format_headers(request: Request) -> dict[str, str]:
 
 
 def _should_audit_request(path: str, method: str) -> bool:
-    return path == _CAPTURE_PATH and method.upper() in {"GET", "POST"}
+    return path == _WEBHOOK_PATH and method.upper() in {"GET", "POST"}
 
 
 class WebhookAuditMiddleware(BaseHTTPMiddleware):
-    """Grava hits em GET/POST /defense ([DEFENSE IN])."""
+    """Grava hits em GET/POST /webhook/biodoc."""
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path

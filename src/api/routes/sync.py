@@ -29,7 +29,7 @@ router = APIRouter(
         "- Integração direta (ERP, script, teste) enviando nome, documento e foto\n"
         "- Reenvio ou correção manual de cadastro no Defense\n\n"
         "**Fluxo BioDoc (não use esta rota):**\n"
-        "- Após verify BioDoc no navegador → `GET /defense` (sync automático)\n\n"
+        "- Após verify BioDoc no navegador → `GET /webhook/biodoc` (sync automático)\n\n"
         "Com `biometrics.face_image_base64`, a foto facial é enviada ou substituída "
         "no Defense. Sem foto, cadastra ou atualiza somente os dados da pessoa."
     ),

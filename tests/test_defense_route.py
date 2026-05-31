@@ -38,7 +38,7 @@ def _make_defense_mock(resolved_org_code: str = "001021") -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_defense_post_logs_payload_and_returns_ok(
+async def test_webhook_biodoc_post_logs_payload_and_returns_ok(
     caplog: pytest.LogCaptureFixture,
 ):
     import logging
@@ -48,13 +48,13 @@ async def test_defense_post_logs_payload_and_returns_ok(
     payload = {"event": "access", "deviceId": "cam-01", "personId": "12345"}
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post("/defense", json=payload)
+        response = await client.post("/webhook/biodoc", json=payload)
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
-    inbound = [r.message for r in caplog.records if "[DEFENSE IN]" in r.message]
-    assert any("POST /defense" in m for m in inbound)
+    inbound = [r.message for r in caplog.records if "[WEBHOOK IN]" in r.message]
+    assert any("POST /webhook/biodoc" in m for m in inbound)
     assert any("deviceId" in m for m in inbound)
     assert any("HTTP 200" in m for m in inbound)
 
@@ -109,7 +109,7 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
         ) as download_mock:
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/defense",
+                    "/webhook/biodoc",
                     params={
                         "card": "00271368992672000",
                         "date": "31/05/2026 15:50:32",
@@ -153,7 +153,7 @@ async def test_defense_get_failed_response_skips_sync():
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
-                "/defense",
+                "/webhook/biodoc",
                 params={"card": "123", "response": "500"},
             )
     finally:

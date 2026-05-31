@@ -1,4 +1,4 @@
-"""Rotas /defense — GET: callback BioDoc (url=); POST: captura Intelbras (log)."""
+"""GET/POST /webhook/biodoc — callback BioDoc (url=) e ingress Intelbras (log)."""
 
 from typing import Annotated
 
@@ -11,11 +11,14 @@ from src.services.biodoc_client import BiodocClient
 from src.services.defense_callback_service import process_defense_biodoc_callback
 from src.services.defense_ia_client import DefenseIAClient
 
-router = APIRouter(tags=["defense"])
+router = APIRouter(
+    prefix="/webhook",
+    tags=["webhook"],
+)
 
 
 @router.get(
-    "/defense",
+    "/biodoc",
     response_model=None,
     response_class=HTMLResponse,
     summary="Callback BioDoc (url=) — sync Defense IA e página de sucesso Unimed",
@@ -24,7 +27,7 @@ router = APIRouter(tags=["defense"])
         "Sincroniza no Defense IA e exibe página HTML no padrão Unimed Joinville."
     ),
 )
-async def defense_biodoc_callback(
+async def webhook_biodoc_callback(
     request: Request,
     biodoc_client: Annotated[BiodocClient, Depends(get_biodoc_client)],
     defense_client: Annotated[DefenseIAClient, Depends(get_defense_client)],
@@ -71,7 +74,7 @@ async def defense_biodoc_callback(
 
 
 @router.post(
-    "/defense",
+    "/biodoc",
     summary="Ingress Intelbras — captura POST e log",
     description=(
         "Recebe POST de integrações Intelbras Defense IA. "
@@ -79,6 +82,6 @@ async def defense_biodoc_callback(
         "Sem autenticação. Não processa nem sincroniza dados."
     ),
 )
-async def defense_intelbras_ingress(request: Request) -> dict[str, str]:
+async def webhook_biodoc_ingress(request: Request) -> dict[str, str]:
     _ = request
     return {"status": "ok"}

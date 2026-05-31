@@ -8,14 +8,14 @@ if os.getenv("SKIP_DOTENV") != "1":
 
 from src.api.webhook_audit_middleware import WebhookAuditMiddleware
 from src.core.lifespan import lifespan
-from src.api.routes.defense import router as defense_router
 from src.api.routes.sync import router as sync_router
+from src.api.routes.webhook import router as webhook_router
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="BIODOC-Intelbras Middleware",
-    version="0.3.3",
+    version="0.3.4",
     lifespan=lifespan,
 )
 app.add_middleware(WebhookAuditMiddleware)
@@ -26,7 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(sync_router)
-app.include_router(defense_router)
+app.include_router(webhook_router)
 
 
 @app.get(
