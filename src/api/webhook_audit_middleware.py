@@ -1,4 +1,4 @@
-"""Auditoria de todas as requisições recebidas em /webhook/* (antes de auth e validação)."""
+"""Auditoria de ingress: /webhook/* (BioDoc) e POST /defense (Intelbras) — fluxos separados."""
 
 from __future__ import annotations
 
@@ -50,12 +50,28 @@ def _format_headers(request: Request) -> dict[str, str]:
     return safe
 
 
+_CAPTURE_PATH = "/defense"
+
+
+def _should_audit_request(path: str, method: str) -> bool:
+    if path.startswith("/webhook"):
+        return True
+    return path == _CAPTURE_PATH and method.upper() in {"GET", "POST"}
+
+
+def _inbound_log_tag(path: str) -> str:
+    if path == _CAPTURE_PATH:
+        return "[DEFENSE IN]"
+    return "[WEBHOOK IN]"
+
+
 class WebhookAuditMiddleware(BaseHTTPMiddleware):
-    """Grava método, path, query e body de qualquer hit em /webhook."""
+    """Grava hits em /webhook/* ([WEBHOOK IN]) e POST /defense ([DEFENSE IN])."""
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path
-        if not path.startswith("/webhook"):
+        method = request.method
+        if not _should_audit_request(path, method):
             return await call_next(request)
 
         client = (
@@ -63,8 +79,8 @@ class WebhookAuditMiddleware(BaseHTTPMiddleware):
             or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
             or (request.client.host if request.client else "?")
         )
-        method = request.method
         query = _redact_query_string(request.url.query)
+        log_tag = _inbound_log_tag(path)
 
         body = await request.body()
 
@@ -76,6 +92,7 @@ class WebhookAuditMiddleware(BaseHTTPMiddleware):
                 query=query,
                 headers=_format_headers(request),
                 body_preview=_format_body_preview(body),
+                log_tag=log_tag,
             )
         )
 
@@ -91,6 +108,7 @@ class WebhookAuditMiddleware(BaseHTTPMiddleware):
                 path=path,
                 client=client,
                 status=response.status_code,
+                log_tag=log_tag,
             )
         )
         return response

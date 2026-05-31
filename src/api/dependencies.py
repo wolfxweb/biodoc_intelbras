@@ -62,7 +62,7 @@ async def get_biodoc_client(request: Request) -> BiodocClient:
 
 
 def verify_biodoc_webhook_token_value(token: str) -> None:
-    """Valida token do webhook (header Bearer ou query `token` no redirect de teste)."""
+    """Valida token Bearer do webhook BioDoc."""
     import secrets
 
     expected = os.getenv("BIODOC_WEBHOOK_TOKEN", "")

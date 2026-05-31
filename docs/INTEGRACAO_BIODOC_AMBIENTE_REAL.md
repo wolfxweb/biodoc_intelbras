@@ -210,6 +210,29 @@ Exemplo de URL verify (sandbox, Colaboradores, **sem** parâmetros no webhook):
 https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22colaboradores%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc/redirect
 ```
 
+**Redirecionamento para portal Unimed após sync no Defense**
+
+Para enviar o usuário de volta ao portal Unimed **somente depois** que o middleware
+sincronizar a pessoa no Defense IA, use `returnUrl` dentro de `details` (ou na query
+`returnUrl=` se o BioDoc repassar no redirect). O parâmetro `url` da verify deve
+apontar para o middleware — **não** para o destino final:
+
+```
+https://web.sandbox.biodoc.com.br/#/integration/verify
+  ?card=00271368992672000
+  &token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==
+  &details={"operador":"VIVER","returnUrl":"https://unimed.me/027/validacao"}
+  &url=https://homologa.wolfx.com.br/webhook/biodoc/redirect
+```
+
+Fluxo: BioDoc redirect → `GET /webhook/biodoc/redirect` → sync Defense → `302`
+para `returnUrl`. Se o sync falhar, o usuário vê página de erro (sem redirect).
+Remova `urlWebhook` desta URL para evitar sync duplicado (o upsert no Defense é
+idempotente, mas o redirect só garante ordem correta no fluxo via `url`).
+
+Alternativa equivalente: `url=https://homologa.wolfx.com.br/webhook/biodoc` (rota
+intermediária `/webhook/sucesso` com o mesmo `returnUrl` em `details`).
+
 Ou, se precisar manter urlWebhook, peça ao suporte BioDoc para incluir `logId` no
 body do POST (junto com `card` e `image`).
 

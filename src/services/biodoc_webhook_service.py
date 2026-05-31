@@ -16,7 +16,7 @@ from fastapi import HTTPException, status
 from src.api.schemas import BiometricData, PersonData, SyncRequest
 from src.api.schemas_biodoc import BiodocWebhookPayload
 from src.core.logging import logger
-from src.core.webhook_log import format_flow_step
+from src.core.webhook_log import format_flow_step, truncate_text
 from src.services.biodoc_client import (
     BiodocAPIUnavailableError,
     BiodocAPIUnauthorizedError,
@@ -713,13 +713,18 @@ async def _sync_to_defense(
             orgCode=resolved_org_code,
         )
     )
-    return {
+    payload: dict = {
         "status": "success",
         "external_id": card,
         "defense_sync": "ok",
         "orgCode": resolved_org_code,
         "name": name,
     }
+    if local_token:
+        payload["local_name"] = local_token
+    elif required_name:
+        payload["local_name"] = required_name
+    return payload
 
 
 async def _face_base64_from_image_field(image: str) -> str:
@@ -727,6 +732,29 @@ async def _face_base64_from_image_field(image: str) -> str:
     if value.lower().startswith(("http://", "https://")):
         return await download_image_as_base64(value)
     return value
+
+
+def _integration_log_image_url(log_data: IntegrationLogData | None) -> str | None:
+    if log_data is None:
+        return None
+    return log_data.main_image or log_data.path
+
+
+def _pick_face_image_url(
+    *,
+    audit_log: IntegrationLogData | None,
+    card_image: str | None,
+    image_url_hint: str | None,
+) -> tuple[str | None, str | None]:
+    """Prioriza captura da verify (integrations/log) → payload → mainimage cadastrada."""
+    audit_url = _integration_log_image_url(audit_log)
+    if audit_url:
+        return audit_url, "integrations/log"
+    if image_url_hint:
+        return image_url_hint, "payload.image"
+    if card_image:
+        return card_image, "mainimage"
+    return None, None
 
 
 async def process_biodoc_webhook_by_card(
@@ -739,10 +767,9 @@ async def process_biodoc_webhook_by_card(
     event_date: str | None = None,
 ) -> dict:
     """
-    Fluxo via cartão: consulta GET /card/mainimage/{card} para nome e imagem cadastrada.
+    Fluxo via cartão: external-audits → integrations/log (imagem da verify) + mainimage.
 
-    `image_url_hint` aceita a URL de imagem já presente no payload do webhook
-    (campo `image` do novo formato), usada como fallback se mainimage não tiver foto.
+    `image_url_hint` aceita URL do payload do webhook quando integrations/log não tiver foto.
     """
     ref_label = f"card:{card}"
     try:
@@ -770,31 +797,6 @@ async def process_biodoc_webhook_by_card(
             detail="Beneficiário inativo no BioDoc",
         )
 
-    # Prioriza imagem cadastrada (mainimage); fallback para a capturada no evento
-    effective_image = card_data.image or image_url_hint
-    if not effective_image:
-        logger.warning("[WEBHOOK] %s sem imagem disponível (mainimage e hint ausentes)", ref_label)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Sem imagem disponível para o beneficiário — não é possível sincronizar sem foto",
-        )
-
-    try:
-        face_b64 = await _face_base64_from_image_field(effective_image)
-    except ImageDownloadError as exc:
-        logger.error(
-            "[WEBHOOK] %s falha ao obter imagem %s: %s",
-            ref_label,
-            effective_image[:80],
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Falha ao baixar imagem do beneficiário: {exc}",
-        ) from exc
-
-    name = card_data.name or card
-
     local_token: str | None = None
     effective_required_name = required_name
     audit_log = await _resolve_log_via_external_audits(card, event_date, biodoc_client)
@@ -809,6 +811,47 @@ async def process_biodoc_webhook_by_card(
             ref_label,
         )
 
+    effective_image, image_source = _pick_face_image_url(
+        audit_log=audit_log,
+        card_image=card_data.image,
+        image_url_hint=image_url_hint,
+    )
+    if not effective_image:
+        logger.warning(
+            "[WEBHOOK] %s sem imagem (integrations/log, mainimage e hint ausentes)",
+            ref_label,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Sem imagem disponível para o beneficiário — não é possível sincronizar sem foto",
+        )
+
+    logger.info(
+        format_flow_step(
+            "imagem resolvida",
+            ref=ref_label,
+            fonte=image_source,
+            url=truncate_text(effective_image, max_len=120),
+        )
+    )
+
+    try:
+        face_b64 = await _face_base64_from_image_field(effective_image)
+    except ImageDownloadError as exc:
+        logger.error(
+            "[WEBHOOK] %s falha ao obter imagem (%s) %s: %s",
+            ref_label,
+            image_source,
+            effective_image[:80],
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Falha ao baixar imagem do beneficiário: {exc}",
+        ) from exc
+
+    name = (audit_log.name if audit_log and audit_log.name else None) or card_data.name or card
+
     return await _sync_to_defense(
         ref_label=ref_label,
         card=card_data.card or card,
@@ -819,16 +862,3 @@ async def process_biodoc_webhook_by_card(
         defense_client=defense_client,
     )
 
-
-def parse_redirect_response_success(response: str | None) -> bool:
-    if response is None or response.strip() == "":
-        return True
-    normalized = response.strip().lower()
-    if normalized in ("200", "201", "204", "true", "1", "ok", "success"):
-        return True
-    if normalized in ("false", "0", "fail", "error"):
-        return False
-    try:
-        return int(normalized) >= 200 and int(normalized) < 300
-    except ValueError:
-        return False

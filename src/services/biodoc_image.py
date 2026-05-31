@@ -27,7 +27,7 @@ async def download_image_as_base64(url: str) -> str:
     - O conteúdo não for uma imagem JPEG ou PNG válida
     - O conteúdo for menor que o mínimo esperado
     """
-    logger.debug("[IMG DOWNLOAD] url=%s", url)
+    logger.info("[IMG DOWNLOAD] url=%s", url)
     try:
         async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
             response = await client.get(url, follow_redirects=True)

@@ -63,11 +63,12 @@ def format_inbound_request(
     query: str,
     headers: dict[str, str] | None = None,
     body_preview: str,
+    log_tag: str = "[WEBHOOK IN]",
 ) -> str:
     query_display = query or "(empty)"
     body_block = format_json_pretty(body_preview) if body_preview != "<empty>" else "(empty)"
     lines = [
-        f"[WEBHOOK IN] {method} {path} ← {client}",
+        f"{log_tag} {method} {path} ← {client}",
         f"  query: {query_display}",
     ]
     if headers:
@@ -78,8 +79,15 @@ def format_inbound_request(
     return "\n".join(lines)
 
 
-def format_inbound_response(*, method: str, path: str, client: str, status: int) -> str:
-    return f"[WEBHOOK IN] {method} {path} ← {client} → HTTP {status}"
+def format_inbound_response(
+    *,
+    method: str,
+    path: str,
+    client: str,
+    status: int,
+    log_tag: str = "[WEBHOOK IN]",
+) -> str:
+    return f"{log_tag} {method} {path} ← {client} → HTTP {status}"
 
 
 def indent_block(text: str, *, spaces: int = 2) -> str:
