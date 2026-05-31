@@ -73,7 +73,7 @@ async def test_sync_person_success(
     assert response.status_code == 200
     assert response.json() == {
         "status": "success",
-        "message": "Dados sincronizados com sucesso",
+        "message": "Usuário enviado ao Intelbras Defense IA com sucesso",
     }
     defense_client_mock.sync_person.assert_awaited_once()
 

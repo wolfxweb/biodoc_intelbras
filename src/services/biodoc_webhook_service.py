@@ -1,20 +1,18 @@
 """
-Orquestrador do fluxo de webhook BioDoc → Defense IA.
+Orquestrador BioDoc → Defense IA (callback GET /defense).
 
-Recebe o payload do evento BioDoc, enriquece os dados via API BioDoc,
-constrói o SyncRequest e chama o cliente Intelbras (cadastro como ACS person).
+Consulta API BioDoc (external-audits, integrations/log, mainimage),
+constrói SyncRequest e faz upsert no Intelbras Defense IA.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 
 from src.api.schemas import BiometricData, PersonData, SyncRequest
-from src.api.schemas_biodoc import BiodocWebhookPayload
 from src.core.logging import logger
 from src.core.webhook_log import format_flow_step, truncate_text
 from src.services.biodoc_client import (
@@ -40,38 +38,6 @@ EXTERNAL_AUDITS_RETRY_SECONDS = 2.0
 EXTERNAL_AUDITS_RETRY_ATTEMPTS = 3
 # BioDoc sandbox: initialDate=endDate=hoje costuma retornar vazio; incluir dia anterior.
 AUDIT_FALLBACK_LOOKBACK_DAYS = 7
-
-
-def _operador_from_payload(payload: BiodocWebhookPayload) -> str | None:
-    """Extrai operador/grupo do POST (campo operador ou details da URL verify)."""
-    if payload.operador and payload.operador.strip():
-        return payload.operador.strip()
-    details = payload.details
-    if details is None:
-        return None
-    parsed: dict[str, object] | None = None
-    if isinstance(details, dict):
-        parsed = details
-    elif isinstance(details, str) and details.strip():
-        try:
-            loaded = json.loads(details)
-            if isinstance(loaded, dict):
-                parsed = loaded
-        except json.JSONDecodeError:
-            return None
-    if not parsed:
-        return None
-    for key in ("operador", "operator", "grupo"):
-        raw = parsed.get(key)
-        if raw is not None and str(raw).strip():
-            return str(raw).strip()
-    return None
-
-
-def webhook_event_succeeded(payload: BiodocWebhookPayload) -> bool:
-    """True somente quando BioDoc indica verify/cadastro bem-sucedido."""
-    response_ok = payload.response is None or (200 <= payload.response < 300)
-    return bool(payload.success and response_ok)
 
 
 def _parse_event_datetime(event_date: str | None) -> datetime | None:
@@ -286,17 +252,6 @@ async def _resolve_log_via_external_audits(
     return log_data
 
 
-def _effective_reference_id(payload: BiodocWebhookPayload) -> str | None:
-    """Identificador para GET /integrations/log/{reference_Id}."""
-    if payload.reference_Id and payload.reference_Id.strip():
-        return payload.reference_Id.strip()
-    if payload.logId and payload.logId.strip():
-        return payload.logId.strip()
-    if payload.id_Log is not None:
-        return str(payload.id_Log)
-    return None
-
-
 def _unique_group_candidates(*values: str | None) -> list[str]:
     seen: set[str] = set()
     candidates: list[str] = []
@@ -373,274 +328,6 @@ async def _resolve_group_org_code(
         )
 
     return resolved_org_code, candidates, matched_source
-
-
-async def process_biodoc_webhook(
-    payload: BiodocWebhookPayload,
-    biodoc_client: BiodocClient,
-    defense_client: DefenseIAClient,
-) -> dict:
-    """
-    Fluxo completo — suporta formato legado (reference_Id) e novo (card + logId):
-
-    1. Rejeita success=false ou response != 2xx
-    2. Tenta obter reference_id efetivo: reference_Id → logId → id_Log
-    3a. Com reference_id → GET /integrations/log/{id} (dados completos)
-    3b. Sem reference_id mas com card → GET /card/mainimage/{card}
-    4. Baixa imagem → base64
-    5. Resolve reguiredName → orgCode no Defense IA
-    6. Upsert no Defense IA e retorna
-    """
-    # --- 1. Verificar sucesso ---
-    # BioDoc exige sempre 200 OK; retornar 4xx/5xx faz o BioDoc parar de enviar.
-    # Falhas (success=false ou response 403/4xx) não vão ao Defense — só log + ignored.
-    if not webhook_event_succeeded(payload):
-        label = payload.reference_Id or payload.logId or payload.card or "?"
-        logger.warning(
-            format_flow_step(
-                "verify falhou — Defense NÃO acionado",
-                ref=label,
-                card=payload.card,
-                success=payload.success,
-                response=payload.response,
-                code=payload.code,
-                logId=payload.logId,
-                defense_sync="skipped",
-            )
-        )
-        return {
-            "status": "ignored",
-            "external_id": payload.card or label,
-            "defense_sync": "skipped",
-        }
-
-    # --- 2. Detectar formato e rotear ---
-    effective_ref_id = _effective_reference_id(payload)
-    if effective_ref_id:
-        return await _process_by_reference_id(
-            effective_ref_id=effective_ref_id,
-            payload=payload,
-            biodoc_client=biodoc_client,
-            defense_client=defense_client,
-        )
-
-    # card + image: foto do evento; nome/status enriquecidos via API BioDoc
-    if payload.card and payload.image:
-        logger.info(
-            "[WEBHOOK] card=%s — image do payload + nome/status via API BioDoc (mainimage)",
-            payload.card,
-        )
-        return await _process_card_with_payload_image(
-            payload,
-            biodoc_client,
-            defense_client,
-        )
-
-    if payload.card:
-        logger.info(
-            "[WEBHOOK] sem reference_Id/logId/image — usando card=%s via API BioDoc",
-            payload.card,
-        )
-        return await process_biodoc_webhook_by_card(
-            payload.card,
-            biodoc_client,
-            defense_client,
-            event_date=payload.date,
-        )
-
-    logger.warning("[WEBHOOK] payload sem reference_Id, logId ou card — descartando")
-    raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        detail="Payload sem identificador: informe 'reference_Id', 'logId' ou 'card'",
-    )
-
-
-async def _process_by_reference_id(
-    *,
-    effective_ref_id: str,
-    payload: BiodocWebhookPayload,
-    biodoc_client: BiodocClient,
-    defense_client: DefenseIAClient,
-) -> dict:
-    """Fluxo oficial: consulta GET /integrations/log/{effective_ref_id}."""
-    try:
-        log_data: IntegrationLogData = await biodoc_client.get_integration_log(
-            effective_ref_id
-        )
-    except BiodocAPIUnauthorizedError as exc:
-        logger.error("[WEBHOOK] ref=%s BIODOC_TOKEN_API inválido: %s", effective_ref_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Credencial da API BioDoc inválida no servidor",
-        ) from exc
-    except BiodocAPIUnavailableError as exc:
-        logger.error("[WEBHOOK] ref=%s API BioDoc indisponível: %s", effective_ref_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="API BioDoc indisponível — tente novamente",
-        ) from exc
-
-    logger.info(
-        "[WEBHOOK] ref=%s log resumo id_Card=%s name=%s localToken=%r requiredName=%r status=%d",
-        effective_ref_id,
-        log_data.id_card,
-        log_data.name,
-        log_data.local_token,
-        log_data.required_name,
-        log_data.status,
-    )
-
-    if log_data.status not in (1, 2):
-        logger.warning(
-            "[WEBHOOK] ref=%s beneficiário id_Card=%s inativo no BioDoc (status=%d), ignorando",
-            effective_ref_id,
-            log_data.id_card,
-            log_data.status,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Beneficiário inativo no BioDoc (status={log_data.status})",
-        )
-
-    # Prioriza mainImage; fallback para path, depois image do payload (novo formato), depois url
-    image_url = log_data.main_image or log_data.path or payload.image or payload.url
-    if not image_url:
-        logger.warning("[WEBHOOK] ref=%s sem URL de imagem disponível", effective_ref_id)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Sem imagem disponível para o beneficiário — não é possível sincronizar sem foto",
-        )
-
-    try:
-        face_b64 = await download_image_as_base64(image_url)
-    except ImageDownloadError as exc:
-        logger.error(
-            "[WEBHOOK] ref=%s falha ao baixar imagem %s: %s",
-            effective_ref_id,
-            image_url,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Falha ao baixar imagem do beneficiário: {exc}",
-        ) from exc
-
-    card = log_data.id_card
-    name = log_data.name or card
-
-    if log_data.local_token:
-        group_required_name = log_data.required_name
-    else:
-        group_required_name = (
-            log_data.required_name
-            or log_data.operador
-            or _operador_from_payload(payload)
-        )
-
-    return await _sync_to_defense(
-        ref_label=effective_ref_id,
-        card=card,
-        name=name,
-        face_b64=face_b64,
-        required_name=group_required_name,
-        local_token=log_data.local_token,
-        defense_client=defense_client,
-    )
-
-
-async def _process_card_with_payload_image(
-    payload: BiodocWebhookPayload,
-    biodoc_client: BiodocClient,
-    defense_client: DefenseIAClient,
-) -> dict:
-    """
-    Formato BioDoc (card + image no payload): usa a foto capturada no evento
-    e enriquece nome/status via GET /card/integration/mainimage.
-    """
-    card = payload.card  # type: ignore[assignment]
-    image_url = payload.image  # type: ignore[assignment]
-    ref_label = payload.logId or card
-
-    try:
-        card_data: CardMainImageData = await biodoc_client.get_card_mainimage(card)
-    except BiodocAPIUnauthorizedError as exc:
-        logger.error("[WEBHOOK] card:%s BIODOC_TOKEN_API inválido: %s", card, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Credencial da API BioDoc inválida no servidor",
-        ) from exc
-    except BiodocAPIUnavailableError as exc:
-        logger.error("[WEBHOOK] card:%s API BioDoc indisponível: %s", card, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="API BioDoc indisponível — tente novamente",
-        ) from exc
-
-    if not card_data.status:
-        logger.warning(
-            "[WEBHOOK] card:%s beneficiário inativo no BioDoc (mainimage), ignorando",
-            card,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Beneficiário inativo no BioDoc",
-        )
-
-    payload_name = payload.name.strip() if payload.name and payload.name.strip() else None
-    name = payload_name or card_data.name or card
-
-    local_token: str | None = None
-    required_name: str | None = None
-    if not _effective_reference_id(payload):
-        audit_log = await _resolve_log_via_external_audits(
-            card,
-            payload.date,
-            biodoc_client,
-        )
-        if audit_log:
-            local_token = audit_log.local_token
-            if local_token:
-                required_name = audit_log.required_name
-            else:
-                required_name = audit_log.required_name or _operador_from_payload(payload)
-        else:
-            required_name = _operador_from_payload(payload)
-            logger.warning(
-                "[WEBHOOK] card=%s sem reference_Id/logId/id_Log e external-audits "
-                "não resolveu local_token — orgCode via operador/requiredName ou fallback",
-                card,
-            )
-
-    logger.info(
-        "[WEBHOOK] card:%s resumo name=%s localToken=%r (image do payload, nome via mainimage)",
-        card,
-        name,
-        local_token,
-    )
-
-    try:
-        face_b64 = await download_image_as_base64(image_url)
-    except ImageDownloadError as exc:
-        logger.error(
-            "[WEBHOOK] ref=%s falha ao baixar imagem do payload %s: %s",
-            ref_label,
-            image_url[:80],
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Falha ao baixar imagem do beneficiário: {exc}",
-        ) from exc
-
-    return await _sync_to_defense(
-        ref_label=ref_label,
-        card=card,
-        name=name,
-        face_b64=face_b64,
-        required_name=required_name,
-        local_token=local_token,
-        defense_client=defense_client,
-    )
 
 
 async def _sync_to_defense(

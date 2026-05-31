@@ -8,8 +8,8 @@ ALLOWED_SOURCES: list[str] = [
 
 
 class PersonData(BaseModel):
-    full_name: str = Field(..., min_length=1)
-    document: str = Field(..., min_length=1)
+    full_name: str = Field(..., min_length=1, description="Nome completo da pessoa no Defense IA")
+    document: str = Field(..., min_length=1, description="Documento (CPF ou identificador)")
 
 
 _JPEG_MAGIC = b"\xff\xd8\xff"
@@ -20,7 +20,7 @@ _MIN_IMAGE_BYTES = 1024
 class BiometricData(BaseModel):
     face_image_base64: str | None = Field(
         default=None,
-        description="Opcional; omitir ou null para cadastro sem foto",
+        description="Foto facial em base64 (JPEG/PNG). Opcional; envia ou atualiza a face no Defense",
     )
 
     @field_validator("face_image_base64")
@@ -48,8 +48,16 @@ class BiometricData(BaseModel):
 
 
 class SyncRequest(BaseModel):
-    source: str = Field(..., min_length=1, description="Sistema de origem (ex: biodoc)")
-    operation: str = Field(..., pattern="^(upsert)$")
+    source: str = Field(
+        ...,
+        min_length=1,
+        description="Sistema de origem (ex.: `biodoc`). Deve estar na lista permitida.",
+    )
+    operation: str = Field(
+        ...,
+        pattern="^(upsert)$",
+        description="Sempre `upsert`: cria ou atualiza a pessoa no Defense IA.",
+    )
 
     @field_validator("source")
     @classmethod
@@ -64,10 +72,16 @@ class SyncRequest(BaseModel):
         min_length=1,
         max_length=30,
         pattern=r"^[0-9A-Za-z]+$",
-        description="personId no Defense IA (somente letras e numeros, max 30 chars)",
+        description=(
+            "Identificador único da pessoa no Defense IA (`personId`). "
+            "Somente letras e números, máx. 30 caracteres."
+        ),
     )
     person: PersonData
-    biometrics: BiometricData | None = None
+    biometrics: BiometricData | None = Field(
+        default=None,
+        description="Foto facial em base64. Opcional; envia ou atualiza a face no Defense.",
+    )
 
 
 class SyncResponse(BaseModel):

@@ -1,4 +1,4 @@
-"""Auditoria de ingress: /webhook/* (BioDoc) e POST /defense (Intelbras) — fluxos separados."""
+"""Auditoria de ingress: GET/POST /defense (BioDoc callback e Intelbras)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ _REDACTED_HEADERS = frozenset(
 _SENSITIVE_QUERY = re.compile(
     r"(?i)(^|&)(token|authorization|access_token|api_key)=([^&]*)"
 )
+
+_CAPTURE_PATH = "/defense"
+_LOG_TAG = "[DEFENSE IN]"
 
 
 def _redact_query_string(query: str) -> str:
@@ -50,23 +53,12 @@ def _format_headers(request: Request) -> dict[str, str]:
     return safe
 
 
-_CAPTURE_PATH = "/defense"
-
-
 def _should_audit_request(path: str, method: str) -> bool:
-    if path.startswith("/webhook"):
-        return True
     return path == _CAPTURE_PATH and method.upper() in {"GET", "POST"}
 
 
-def _inbound_log_tag(path: str) -> str:
-    if path == _CAPTURE_PATH:
-        return "[DEFENSE IN]"
-    return "[WEBHOOK IN]"
-
-
 class WebhookAuditMiddleware(BaseHTTPMiddleware):
-    """Grava hits em /webhook/* ([WEBHOOK IN]) e POST /defense ([DEFENSE IN])."""
+    """Grava hits em GET/POST /defense ([DEFENSE IN])."""
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path
@@ -80,7 +72,6 @@ class WebhookAuditMiddleware(BaseHTTPMiddleware):
             or (request.client.host if request.client else "?")
         )
         query = _redact_query_string(request.url.query)
-        log_tag = _inbound_log_tag(path)
 
         body = await request.body()
 
@@ -92,7 +83,7 @@ class WebhookAuditMiddleware(BaseHTTPMiddleware):
                 query=query,
                 headers=_format_headers(request),
                 body_preview=_format_body_preview(body),
-                log_tag=log_tag,
+                log_tag=_LOG_TAG,
             )
         )
 
@@ -108,7 +99,7 @@ class WebhookAuditMiddleware(BaseHTTPMiddleware):
                 path=path,
                 client=client,
                 status=response.status_code,
-                log_tag=log_tag,
+                log_tag=_LOG_TAG,
             )
         )
         return response

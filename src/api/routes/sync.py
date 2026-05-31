@@ -10,7 +10,7 @@ from src.services.defense_sync import sync_to_defense
 
 router = APIRouter(
     prefix="/v1/person",
-    tags=["person"],
+    tags=["Defense IA — cadastro manual"],
     dependencies=[Depends(require_admin_token)],
 )
 
@@ -18,11 +18,20 @@ router = APIRouter(
 @router.post(
     "/sync",
     response_model=SyncResponse,
-    summary="Sincronizar pessoa (upsert)",
+    summary="Enviar usuário para o Intelbras Defense IA (cadastro/atualização)",
     description=(
-        "Cria ou atualiza pessoa no Intelbras Defense IA (`external_id` = personId). "
-        "Use `Authorization: Bearer <ADMIN_API_TOKEN>` e `source` da lista permitida. "
-        "Se `biometrics.face_image_base64` for enviado, a foto é criada/atualizada."
+        "**Cadastro manual de pessoa no Defense IA** — use esta rota para enviar ou "
+        "atualizar um usuário diretamente, sem passar pelo fluxo BioDoc.\n\n"
+        "O middleware faz **upsert** no Defense: cria a pessoa se não existir ou "
+        "atualiza se o `external_id` já estiver cadastrado (`personId` no Defense).\n\n"
+        "**Autenticação:** `Authorization: Bearer <ADMIN_API_TOKEN>`\n\n"
+        "**Quando usar:**\n"
+        "- Integração direta (ERP, script, teste) enviando nome, documento e foto\n"
+        "- Reenvio ou correção manual de cadastro no Defense\n\n"
+        "**Fluxo BioDoc (não use esta rota):**\n"
+        "- Após verify BioDoc no navegador → `GET /defense` (sync automático)\n\n"
+        "Com `biometrics.face_image_base64`, a foto facial é enviada ou substituída "
+        "no Defense. Sem foto, cadastra ou atualiza somente os dados da pessoa."
     ),
 )
 async def sync_person(
@@ -52,4 +61,7 @@ async def sync_person(
         payload.source,
         payload.external_id,
     )
-    return SyncResponse(status="success", message="Dados sincronizados com sucesso")
+    return SyncResponse(
+        status="success",
+        message="Usuário enviado ao Intelbras Defense IA com sucesso",
+    )
