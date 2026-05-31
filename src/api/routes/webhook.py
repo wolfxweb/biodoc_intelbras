@@ -1,8 +1,12 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 
-from src.api.biodoc_redirect_query import parse_biodoc_redirect_params
+from src.api.biodoc_redirect_query import (
+    _operador_from_details_raw,
+    parse_biodoc_redirect_params,
+)
 from src.api.webhook_audit_middleware import _redact_query_string
 from src.api.dependencies import (
     get_biodoc_client,
@@ -150,5 +154,122 @@ async def webhook_biodoc_redirect(
         biodoc_client,
         defense_client,
         event_date=params.date,
+        required_name=params.operador,
     )
     return BiodocWebhookResponse(**result)
+
+
+@router.get(
+    "/biodoc",
+    summary="Callback BioDoc no navegador (parâmetro url= na verify)",
+    description=(
+        "Redirect para página de sucesso após verify. O sync no Defense usa "
+        "GET /webhook/sucesso (external-audits → integrations/log)."
+    ),
+)
+async def webhook_biodoc_browser_callback(
+    request: Request,
+) -> RedirectResponse:
+    try:
+        params = parse_biodoc_redirect_params(request.url.query)
+    except ValueError as exc:
+        logger.warning(
+            "[WEBHOOK REDIRECT] GET /webhook/biodoc query inválida: %s",
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+    if not params.card:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Parâmetro 'card' ausente na query",
+        )
+
+    if not parse_redirect_response_success(params.response):
+        logger.warning(
+            "[WEBHOOK REDIRECT] GET /webhook/biodoc card=%s response=%r — sem redirect sucesso",
+            params.card,
+            params.response,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Verificação BioDoc não concluída com sucesso",
+        )
+
+    logger.info(
+        "[WEBHOOK REDIRECT] card=%s response=%s — GET /webhook/biodoc → /webhook/sucesso",
+        params.card,
+        params.response,
+    )
+    return RedirectResponse(
+        url=f"/webhook/sucesso?card={params.card}",
+        status_code=status.HTTP_302_FOUND,
+    )
+
+
+@router.get(
+    "/sucesso",
+    response_class=HTMLResponse,
+    summary="Página de sucesso + sync Defense (fluxo url= do BioDoc)",
+)
+async def webhook_biodoc_sucesso(
+    request: Request,
+    biodoc_client: Annotated[BiodocClient, Depends(get_biodoc_client)],
+    defense_client: Annotated[DefenseIAClient, Depends(get_defense_client)],
+) -> HTMLResponse:
+    card = request.query_params.get("card", "").strip()
+    if not card:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Parâmetro 'card' ausente",
+        )
+
+    client_host = (
+        request.headers.get("x-real-ip")
+        or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "?")
+    )
+    logger.info("[WEBHOOK SUCESSO] GET /webhook/sucesso card=%s ← %s", card, client_host)
+
+    date = request.query_params.get("date")
+    operador = request.query_params.get("operador")
+    details = request.query_params.get("details")
+    if not operador and details:
+        operador = _operador_from_details_raw(details)
+
+    try:
+        await process_biodoc_webhook_by_card(
+            card,
+            biodoc_client,
+            defense_client,
+            event_date=date,
+            required_name=operador,
+        )
+    except HTTPException as exc:
+        logger.warning(
+            "[WEBHOOK SUCESSO] card=%s sync Defense falhou: %s",
+            card,
+            exc.detail,
+        )
+        return HTMLResponse(
+            content=(
+                "<!DOCTYPE html><html><body>"
+                f"<h1>Verificação registrada</h1>"
+                f"<p>Não foi possível sincronizar no Defense: {exc.detail}</p>"
+                "</body></html>"
+            ),
+            status_code=exc.status_code,
+        )
+
+    return HTMLResponse(
+        content=(
+            "<!DOCTYPE html><html><body>"
+            "<h1>Verificação concluída</h1>"
+            f"<p>Beneficiário {card} sincronizado no Defense IA.</p>"
+            "</body></html>"
+        ),
+        status_code=status.HTTP_200_OK,
+    )

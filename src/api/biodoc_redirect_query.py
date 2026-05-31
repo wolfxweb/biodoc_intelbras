@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from urllib.parse import parse_qs
 
@@ -21,6 +22,25 @@ class BiodocRedirectParams:
     percentage: str | None
     biodoc_status: int | None
     url: str | None
+    details: str | None
+    operador: str | None
+
+
+def _operador_from_details_raw(details: str | None) -> str | None:
+    if not details or not details.strip():
+        return None
+    text = details.strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("operador", "operator", "grupo"):
+        raw = parsed.get(key)
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    return None
 
 
 def _first(parsed: dict[str, list[str]], *keys: str) -> str | None:
@@ -56,6 +76,9 @@ def parse_biodoc_redirect_params(query: str) -> BiodocRedirectParams:
     status_raw = _first(parsed, "status")
     biodoc_status = int(status_raw) if status_raw and status_raw.isdigit() else None
 
+    details = _first(parsed, "details")
+    operador = _first(parsed, "operador") or _operador_from_details_raw(details)
+
     return BiodocRedirectParams(
         token=token,
         card=_first(parsed, "card"),
@@ -70,4 +93,6 @@ def parse_biodoc_redirect_params(query: str) -> BiodocRedirectParams:
         percentage=_first(parsed, "percentage"),
         biodoc_status=biodoc_status,
         url=_first(parsed, "url"),
+        details=details,
+        operador=operador,
     )
