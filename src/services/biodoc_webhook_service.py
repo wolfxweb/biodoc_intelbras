@@ -25,13 +25,10 @@ from src.services.biodoc_client import (
 )
 from src.services.biodoc_image import ImageDownloadError, download_image_as_base64
 from src.services.defense_ia_client import (
-    DefenseIAArgumentError,
     DefenseIAClient,
     DefenseIAError,
-    DefenseIANotReadyError,
-    DefenseIAUnavailableError,
-    defense_error_detail_public,
 )
+from src.services.defense_sync import sync_to_defense
 
 AUDIT_LOOKUP_WINDOW_MINUTES = 15
 EXTERNAL_AUDITS_RETRY_SECONDS = 2.0
@@ -361,35 +358,13 @@ async def _sync_to_defense(
         required_name=required_name,
     )
 
-    try:
-        await defense_client.sync_person(sync_request, resolved_org_code)
-    except DefenseIAArgumentError as exc:
-        logger.warning(
-            "[WEBHOOK] ref=%s imagem inválida para id_Card=%s: %s",
-            ref_label,
-            card,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Biometria inválida: imagem facial não reconhecida pelo Defense IA",
-        ) from exc
-    except DefenseIANotReadyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
-    except (DefenseIAUnavailableError, DefenseIAError) as exc:
-        logger.exception(
-            "[WEBHOOK] ref=%s falha ao sincronizar id_Card=%s: %s",
-            ref_label,
-            card,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=defense_error_detail_public(exc),
-        ) from exc
+    sync_result = await sync_to_defense(
+        sync_request,
+        defense_client,
+        sync_target="visitor",
+        org_code=resolved_org_code,
+        log_context=f"[WEBHOOK] ref={ref_label}",
+    )
 
     logger.info(
         format_flow_step(
@@ -398,6 +373,8 @@ async def _sync_to_defense(
             id_Card=card,
             name=name,
             orgCode=resolved_org_code,
+            visitorId=sync_result.get("visitor_id"),
+            personId=sync_result.get("person_id"),
         )
     )
     payload: dict = {
@@ -407,6 +384,10 @@ async def _sync_to_defense(
         "orgCode": resolved_org_code,
         "name": name,
     }
+    if sync_result.get("visitor_id"):
+        payload["visitorId"] = sync_result["visitor_id"]
+    if sync_result.get("person_id"):
+        payload["personId"] = sync_result["person_id"]
     if local_token:
         payload["local_name"] = local_token
     elif required_name:

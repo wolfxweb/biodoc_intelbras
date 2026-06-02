@@ -1,6 +1,7 @@
 import base64
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ALLOWED_SOURCES: list[str] = [
     "biodoc",
@@ -47,6 +48,38 @@ class BiometricData(BaseModel):
         return v
 
 
+class DefenseSyncOptions(BaseModel):
+    """Opções de cadastro no Intelbras Defense (obrigatório em POST /v1/person/sync)."""
+
+    sync_target: Literal["visitor", "person"] = Field(
+        ...,
+        description=(
+            "`visitor` — nova visita via POST /obms/api/v1.0/visitors/visitor; "
+            "`person` — upsert ACS (personId = external_id)."
+        ),
+    )
+    org_code: str = Field(
+        ...,
+        min_length=1,
+        description="Código da sub-organização no Defense (ex.: `001021`).",
+    )
+    acs_channel_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Portas de acesso (formato `1000049$7$0$0`). Só com `sync_target=visitor`. "
+            "Omitir: busca automática por org_code (fallback permissão padrão). "
+            "`[]`: permissão padrão do visitante, sem busca. "
+            "Lista preenchida: portas fixas enviadas ao Defense."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def acs_channels_only_for_visitor(self) -> "DefenseSyncOptions":
+        if self.acs_channel_ids is not None and self.sync_target != "visitor":
+            raise ValueError("acs_channel_ids só se aplica quando sync_target=visitor")
+        return self
+
+
 class SyncRequest(BaseModel):
     source: str = Field(
         ...,
@@ -84,8 +117,22 @@ class SyncRequest(BaseModel):
     )
 
 
+class ManualSyncRequest(SyncRequest):
+    """POST /v1/person/sync — exige bloco `defense` no body (não usa .env para modo/org/portas)."""
+
+    defense: DefenseSyncOptions
+
+
 class SyncResponse(BaseModel):
     status: str
     message: str
+    visitor_id: str | None = Field(
+        default=None,
+        description="ID da visita gerado pelo Defense IA (modo visitante)",
+    )
+    person_id: str | None = Field(
+        default=None,
+        description="personId retornado pelo Defense IA",
+    )
 
 

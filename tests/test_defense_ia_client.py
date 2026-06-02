@@ -11,12 +11,18 @@ from src.services.defense_ia_client import (
     BRMS_PERSON,
     BRMS_PERSON_DELETE_BATCH,
     BRMS_PERSON_GROUP_LIST,
+    BRMS_VISITOR,
+    BRMS_VISITOR_CONFIG,
     DefenseIAClient,
     DefenseIAError,
     DefenseIASettings,
+    DefenseIAArgumentError,
     brms_person_path,
     build_auth_signatures,
     extract_face_pictures_from_person_body,
+    extract_sync_result_ids,
+    parse_visitor_channel_default,
+    parse_visitor_channel_map,
 )
 
 
@@ -907,3 +913,195 @@ async def test_brms_upsert_raises_on_code_1001_when_org_not_applied():
     finally:
         await client.close()
         await http_client.aclose()
+
+
+def test_parse_visitor_channel_map_and_default():
+    mapped = parse_visitor_channel_map(
+        '{"001021":["1000174$7$0$0"],"001015001":"1000032$7$0$0"}'
+    )
+    assert mapped == {
+        "001021": ["1000174$7$0$0"],
+        "001015001": ["1000032$7$0$0"],
+    }
+    assert parse_visitor_channel_default("a,b, c") == ["a", "b", "c"]
+
+
+def test_extract_sync_result_ids():
+    body = {"code": 1000, "data": {"visitorId": "7", "personId": "999"}}
+    assert extract_sync_result_ids(body) == {
+        "visitor_id": "7",
+        "person_id": "999",
+    }
+
+
+def test_build_visitor_payload_includes_status_and_channels():
+    settings = brms_settings(
+        visited_person_id="host1",
+        visitor_status="1",
+        visited_name="Recepcao",
+    )
+    client = DefenseIAClient(settings=settings)
+    payload = client.build_visitor_payload(
+        sync_payload(),
+        entrance_ids=["1000174$7$0$0"],
+        org_code="001021",
+        org_name="CHU - ESPAÇO VIVER BEM",
+    )
+    assert payload["status"] == "1"
+    assert payload["idType"] == "6"
+    assert payload["visitedPersonId"] == "host1"
+    assert payload["visitedName"] == "Recepcao"
+    assert payload["visitedOrgName"] == "CHU - ESPAÇO VIVER BEM"
+    assert payload["visitorOrgName"] == "CHU - ESPAÇO VIVER BEM"
+    assert payload["rightInfo"]["acsChannelIds"] == ["1000174$7$0$0"]
+    assert payload["remark"] == "123"
+    assert payload["authInfo"]["facePictures"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_visitor_channel_ids_uses_map():
+    client = DefenseIAClient(
+        settings=brms_settings(
+            visitor_channel_map={"001021": ["1000174$7$0$0"]},
+        )
+    )
+    ids = await client.resolve_visitor_channel_ids("001021")
+    assert ids == ["1000174$7$0$0"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_visitor_channel_ids_fetches_server_config():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "deviceOrg" in request.url.path:
+            return httpx.Response(200, json={"code": 1000, "data": {"departments": []}})
+        if request.url.path == BRMS_VISITOR_CONFIG:
+            return httpx.Response(
+                200,
+                json={"code": 1000, "data": {"acsChannelIds": ["1000014$7$0$0"]}},
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(
+        settings=brms_settings(),
+        http_client=http_client,
+    )
+    client._token = "token"
+    try:
+        ids = await client.resolve_visitor_channel_ids("001999")
+    finally:
+        await client.close()
+        await http_client.aclose()
+    assert ids == ["1000014$7$0$0"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_visitor_channel_ids_uses_device_org_tree():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "deviceOrg" in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 1000,
+                    "data": {
+                        "departments": [
+                            {
+                                "code": "001021",
+                                "name": "CHU - ESPAÇO VIVER BEM",
+                                "channel": [{"id": "1000032$7$0$0"}],
+                            }
+                        ]
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    client._token = "token"
+    try:
+        ids = await client.resolve_visitor_channel_ids("001021")
+    finally:
+        await client.close()
+        await http_client.aclose()
+    assert ids == ["1000032$7$0$0"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_visitor_channel_ids_returns_empty_when_no_sources():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "deviceOrg" in request.url.path:
+            return httpx.Response(200, json={"code": 1000, "data": {"departments": []}})
+        if request.url.path == BRMS_VISITOR_CONFIG:
+            return httpx.Response(200, json={"code": 1000, "data": {}})
+        if request.url.path == BRMS_PERSON_GROUP_LIST:
+            return httpx.Response(200, json={"code": 1000, "data": {"results": []}})
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    client._token = "token"
+    try:
+        ids = await client.resolve_visitor_channel_ids("001")
+        assert ids == []
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sync_visitor_posts_to_visitor_endpoint():
+    posted: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == BRMS_VISITOR and request.method == "POST":
+            posted.append(json.loads(request.content.decode()))
+            return httpx.Response(
+                200,
+                json={"code": 1000, "data": {"visitorId": "5", "personId": "888"}},
+            )
+        if "deviceOrg" in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 1000,
+                    "data": {
+                        "departments": [
+                            {"code": "001021", "channel": [{"id": "1000174$7$0$0"}]}
+                        ]
+                    },
+                },
+            )
+        if request.url.path == BRMS_PERSON_GROUP_LIST:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 1000,
+                    "data": {
+                        "results": [
+                            {
+                                "orgCode": "001021",
+                                "orgName": "CHU - ESPAÇO VIVER BEM",
+                            }
+                        ]
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(
+        settings=brms_settings(),
+        http_client=http_client,
+    )
+    client._token = "token"
+    try:
+        result = await client.sync_visitor(sync_payload(), "001021")
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert result["data"]["visitorId"] == "5"
+    assert posted[0]["visitorName"] == "Maria Silva"
+    assert posted[0]["rightInfo"]["acsChannelIds"] == ["1000174$7$0$0"]
+    assert posted[0]["visitedOrgName"] == "CHU - ESPAÇO VIVER BEM"

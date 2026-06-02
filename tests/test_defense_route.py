@@ -24,14 +24,19 @@ MOCK_USER_NAME = "CARLOS EDUARDO LOBO"
 
 def _make_defense_mock(resolved_org_code: str = "001021") -> AsyncMock:
     client = AsyncMock()
-    client.sync_person.return_value = {"ok": True}
+    client.sync_visitor.return_value = {
+        "code": 1000,
+        "data": {"visitorId": "42", "personId": "999"},
+    }
     client.resolve_org_code.return_value = resolved_org_code
+    client.resolve_org_name_by_code.return_value = "CHU - ESPAÇO VIVER BEM"
     client.settings = DefenseIASettings(
         server_url="http://defense.test",
         username="u",
         password="p",
         api_mode="brms",
         org_code="001",
+        sync_target="visitor",
     )
     client.is_ready = True
     return client
@@ -138,8 +143,11 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
     assert any("orgCode resolvido" in m for m in messages)
     assert any("001021" in m for m in messages)
     download_mock.assert_awaited_once_with("https://example.com/verify-capture.jpg")
-    defense_mock.sync_person.assert_awaited_once()
+    defense_mock.sync_visitor.assert_awaited_once()
     defense_mock.resolve_org_code.assert_awaited_once_with("CHU - ESPAÇO VIVER BEM")
+    call_args = defense_mock.sync_visitor.await_args
+    assert call_args is not None
+    assert call_args[0][1] == "001021"
 
 
 @pytest.mark.asyncio
@@ -162,4 +170,4 @@ async def test_defense_get_failed_response_skips_sync():
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
     assert "Verificação não concluída" in response.text
-    defense_mock.sync_person.assert_not_called()
+    defense_mock.sync_visitor.assert_not_called()

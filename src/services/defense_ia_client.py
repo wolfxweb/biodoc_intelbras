@@ -3,7 +3,7 @@ import hashlib
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import httpx
@@ -40,11 +40,64 @@ IDEMPOTENT_MUTATION_CODES = (1001, "1001")
 # Listagem de sub-organizações (grupos de pessoas) no Defense IA BRMS 3.x.
 BRMS_PERSON_GROUP_LIST = "/obms/api/v1.1/acs/person-group/list"
 BRMS_PERSON_DELETE_BATCH = "/obms/api/v1.1/acs/person/delete/batch"
+BRMS_VISITOR_CONFIG = "/brms/api/v1.1/config/visitor"
+BRMS_DEVICE_ORG_TREE = "/brms/api/v1.0/tree/deviceOrg"
 PERSON_GROUPS_CACHE_TTL_SECONDS = 1800.0
+DEVICE_ORG_CACHE_TTL_SECONDS = 1800.0
+ACS_CHANNEL_TYPE = "7"
+SYNC_TARGET_PERSON = "person"
+SYNC_TARGET_VISITOR = "visitor"
 
 
 def _normalize_org_lookup_key(name: str) -> str:
     return name.strip().casefold()
+
+
+def parse_visitor_channel_map(raw: str) -> dict[str, list[str]]:
+    """Parse DEFENSE_IA_VISITOR_CHANNEL_MAP (JSON orgCode -> acsChannelIds)."""
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"DEFENSE_IA_VISITOR_CHANNEL_MAP JSON inválido: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("DEFENSE_IA_VISITOR_CHANNEL_MAP deve ser um objeto JSON")
+    result: dict[str, list[str]] = {}
+    for key, value in parsed.items():
+        org = str(key).strip()
+        if not org:
+            continue
+        if isinstance(value, str):
+            channels = [value.strip()] if value.strip() else []
+        elif isinstance(value, list):
+            channels = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            channels = []
+        if channels:
+            result[org] = channels
+    return result
+
+
+def parse_visitor_channel_default(raw: str) -> list[str]:
+    """Parse DEFENSE_IA_VISITOR_CHANNEL_DEFAULT (CSV de acsChannelIds)."""
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def extract_sync_result_ids(body: dict[str, Any] | None) -> dict[str, str | None]:
+    """Extrai visitorId e personId da resposta do Defense IA."""
+    if not body:
+        return {"visitor_id": None, "person_id": None}
+    data = body.get("data", body)
+    if not isinstance(data, dict):
+        return {"visitor_id": None, "person_id": None}
+    visitor_id = data.get("visitorId")
+    person_id = data.get("personId")
+    return {
+        "visitor_id": str(visitor_id).strip() if visitor_id not in (None, "") else None,
+        "person_id": str(person_id).strip() if person_id not in (None, "") else None,
+    }
 
 
 def extract_org_code_from_person_body(body: dict[str, Any] | None) -> str | None:
@@ -103,6 +156,73 @@ def _parse_org_name_code_pairs(body: object) -> dict[str, str]:
     return orgs
 
 
+def _parse_org_code_to_name(body: object) -> dict[str, str]:
+    """Extrai {orgCode: orgName} de respostas do person-group/list."""
+    names: dict[str, str] = {}
+    if not isinstance(body, dict):
+        return names
+
+    data = body.get("data", body)
+    items: list[object] = []
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        for key in ("list", "pageData", "groups", "records", "data", "groupList", "results"):
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                items = candidate
+                break
+
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        code = entry.get("orgCode") or entry.get("groupCode") or entry.get("code")
+        name = entry.get("orgName") or entry.get("groupName") or entry.get("name")
+        if not code or not name:
+            base = entry.get("baseInfo")
+            if isinstance(base, dict):
+                code = code or base.get("orgCode") or base.get("groupCode")
+                name = name or base.get("orgName") or base.get("groupName")
+        if code and name:
+            names[str(code).strip()] = str(name).strip()
+    return names
+
+
+def _extract_department_channels(department: dict[str, Any]) -> list[str]:
+    channels: list[str] = []
+    for item in department.get("channel") or []:
+        if isinstance(item, dict) and item.get("id"):
+            channels.append(str(item["id"]).strip())
+    return channels
+
+
+def _find_device_org_channels(
+    departments: list[object],
+    *,
+    org_code: str | None = None,
+    org_name_key: str | None = None,
+) -> list[str]:
+    for department in departments:
+        if not isinstance(department, dict):
+            continue
+        code = str(department.get("code") or "").strip()
+        name_key = _normalize_org_lookup_key(str(department.get("name") or ""))
+        if org_code and code == org_code:
+            return _extract_department_channels(department)
+        if org_name_key and name_key == org_name_key:
+            return _extract_department_channels(department)
+        sub = department.get("departments") or department.get("deparments") or []
+        if isinstance(sub, list):
+            found = _find_device_org_channels(
+                sub,
+                org_code=org_code,
+                org_name_key=org_name_key,
+            )
+            if found:
+                return found
+    return []
+
+
 class DefenseIAError(Exception):
     pass
 
@@ -138,6 +258,12 @@ class DefenseIASettings:
     keep_alive_interval_seconds: float = 20.0
     timeout_seconds: float = 10.0
     visited_person_id: str = ""
+    sync_target: Literal["person", "visitor"] = SYNC_TARGET_VISITOR
+    visitor_channel_map: dict[str, list[str]] = field(default_factory=dict)
+    visitor_channel_default: list[str] = field(default_factory=list)
+    visitor_status: str = "1"
+    visited_name: str = ""
+    visited_org_name: str = ""
 
     @property
     def enabled(self) -> bool:
@@ -146,6 +272,10 @@ class DefenseIASettings:
     @property
     def is_brms(self) -> bool:
         return self.api_mode == API_MODE_BRMS
+
+    @property
+    def is_visitor_sync(self) -> bool:
+        return self.sync_target == SYNC_TARGET_VISITOR
 
 
 def extract_face_pictures_from_person_body(body: dict[str, Any]) -> list[str]:
@@ -177,9 +307,13 @@ class DefenseIAClient:
         self._keep_alive_task: asyncio.Task[None] | None = None
         self._auth_lock = asyncio.Lock()
         self._person_groups_cache: dict[str, str] | None = None
+        self._person_groups_by_code: dict[str, str] | None = None
         self._person_groups_cache_at: float = 0.0
         self._person_groups_lock = asyncio.Lock()
         self._person_groups_available: bool | None = None
+        self._device_org_departments: list[dict[str, Any]] | None = None
+        self._device_org_cache_at: float = 0.0
+        self._device_org_lock = asyncio.Lock()
 
     @property
     def token(self) -> str | None:
@@ -379,6 +513,7 @@ class DefenseIAClient:
                 ) from exc
 
             orgs = _parse_org_name_code_pairs(body)
+            self._person_groups_by_code = _parse_org_code_to_name(body)
             self._person_groups_available = True
             self._person_groups_cache = orgs
             self._person_groups_cache_at = time.time()
@@ -444,24 +579,116 @@ class DefenseIAClient:
             )
         return resolved
 
+    async def resolve_org_name_by_code(self, org_code: str | None) -> str | None:
+        code = (org_code or self.settings.org_code or "001").strip()
+        await self.list_person_groups()
+        if self._person_groups_by_code:
+            name = self._person_groups_by_code.get(code)
+            if name:
+                return name
+        return None
+
+    async def list_device_org_departments(
+        self, force_refresh: bool = False
+    ) -> list[dict[str, Any]]:
+        now = time.time()
+        if (
+            not force_refresh
+            and self._device_org_departments is not None
+            and (now - self._device_org_cache_at) < DEVICE_ORG_CACHE_TTL_SECONDS
+        ):
+            return self._device_org_departments
+
+        async with self._device_org_lock:
+            now = time.time()
+            if (
+                not force_refresh
+                and self._device_org_departments is not None
+                and (now - self._device_org_cache_at) < DEVICE_ORG_CACHE_TTL_SECONDS
+            ):
+                return self._device_org_departments
+
+            if not self._token:
+                await self.login()
+
+            response = await self._request(
+                "GET",
+                f"{BRMS_DEVICE_ORG_TREE}?channelTypes={ACS_CHANNEL_TYPE}",
+                headers=self._auth_headers(),
+            )
+            if response.status_code == 401:
+                await self.login()
+                response = await self._request(
+                    "GET",
+                    f"{BRMS_DEVICE_ORG_TREE}?channelTypes={ACS_CHANNEL_TYPE}",
+                    headers=self._auth_headers(),
+                )
+
+            departments: list[dict[str, Any]] = []
+            if response.is_success and response.content:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {}
+                data = body.get("data", body) if isinstance(body, dict) else {}
+                raw = data.get("departments") if isinstance(data, dict) else None
+                if isinstance(raw, list):
+                    departments = [d for d in raw if isinstance(d, dict)]
+
+            self._device_org_departments = departments
+            self._device_org_cache_at = time.time()
+            logger.debug(
+                "[DEFENSE_IA] deviceOrg cache atualizado: %d departamento(s) raiz",
+                len(departments),
+            )
+            return departments
+
     async def sync_visitor(
-        self, payload: SyncRequest, entrance_ids: list[str]
+        self,
+        payload: SyncRequest,
+        org_code: str | None = None,
+        *,
+        entrance_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Upsert de visitante no Defense IA 3.x (BRMS). Trata re-login em 401."""
+        """Cadastra visitante no Defense IA 3.x usando orgCode (como pessoa ACS)."""
         if self.settings.enabled and not self._token:
             raise DefenseIANotReadyError("Defense IA não conectado")
-        return await self._send_visitor_with_relogin(payload, entrance_ids)
+        resolved_org = org_code or self.settings.org_code or "001"
+        if entrance_ids is None:
+            entrance_ids = await self.resolve_visitor_channel_ids(resolved_org)
+        org_name = await self.resolve_org_name_by_code(resolved_org)
+        return await self._send_visitor_with_relogin(
+            payload,
+            entrance_ids,
+            org_code=resolved_org,
+            org_name=org_name,
+        )
 
     async def _send_visitor_with_relogin(
-        self, payload: SyncRequest, entrance_ids: list[str]
+        self,
+        payload: SyncRequest,
+        entrance_ids: list[str],
+        *,
+        org_code: str | None = None,
+        org_name: str | None = None,
     ) -> dict[str, Any]:
         if not self._token:
             await self.login()
 
-        response = await self._upsert_visitor_request(payload, entrance_ids)
+        response = await self._upsert_visitor_request(
+            payload,
+            entrance_ids,
+            org_code=org_code,
+            org_name=org_name,
+        )
         if response.status_code == 401:
             await self.login()
-            response = await self._upsert_visitor_request(payload, entrance_ids)
+            response = await self._upsert_visitor_request(
+                payload,
+                entrance_ids,
+                org_code=org_code,
+                org_name=org_name,
+            )
 
         self._raise_for_response(response)
         if not response.content:
@@ -469,11 +696,21 @@ class DefenseIAClient:
         return response.json()
 
     async def _upsert_visitor_request(
-        self, payload: SyncRequest, entrance_ids: list[str]
+        self,
+        payload: SyncRequest,
+        entrance_ids: list[str],
+        *,
+        org_code: str | None = None,
+        org_name: str | None = None,
     ) -> httpx.Response:
         # O Defense IA gera visitorId automaticamente; cada evento BioDoc = nova visita.
         headers = self._auth_headers()
-        visitor_payload = self.build_visitor_payload(payload, entrance_ids=entrance_ids)
+        visitor_payload = self.build_visitor_payload(
+            payload,
+            entrance_ids=entrance_ids,
+            org_code=org_code,
+            org_name=org_name,
+        )
         logger.debug(
             "[DEFENSE_IA OUT] method=POST url=%s payload=%s",
             BRMS_VISITOR,
@@ -542,6 +779,8 @@ class DefenseIAClient:
         payload: SyncRequest,
         *,
         entrance_ids: list[str],
+        org_code: str | None = None,
+        org_name: str | None = None,
         existing_face_pictures: list[str] | None = None,
     ) -> dict[str, Any]:
         face = self._resolve_face_base64(payload)
@@ -557,12 +796,15 @@ class DefenseIAClient:
         acs_channel_ids = entrance_ids
 
         body: dict[str, Any] = {
+            "status": self.settings.visitor_status,
             "visitorName": payload.person.full_name,
-            "idType": "0",
+            "idType": "6",
             "idNum": payload.person.document or None,
+            "expectArrivalTime": "0",
             "arrivalTime": str(now),
             "expectLeaveTime": str(now + 86400 * 365 * 10),
-            "reason": "",
+            "leaveTime": "0",
+            "reason": "BioDoc",
             "remark": payload.external_id,
             "plateNo": "",
             "authInfo": {
@@ -575,10 +817,118 @@ class DefenseIAClient:
                 "liftChannels": [],
             },
         }
-        # visitedPersonId é obrigatório — ID do usuário receptor no Defense IA
+        resolved_org_name = org_name or self.settings.visited_org_name
+        if org_name:
+            body["visitorOrgName"] = org_name
+        if resolved_org_name:
+            body["visitedName"] = self.settings.visited_name or resolved_org_name
+            body["visitedOrgName"] = resolved_org_name
+        elif self.settings.visited_name:
+            body["visitedName"] = self.settings.visited_name
+        if org_code:
+            logger.debug(
+                "[DEFENSE_IA] visitante orgCode=%s orgName=%r acsChannelIds=%s",
+                org_code,
+                org_name,
+                acs_channel_ids,
+            )
         if self.settings.visited_person_id:
             body["visitedPersonId"] = self.settings.visited_person_id
         return body
+
+    async def resolve_visitor_channel_ids(self, org_code: str | None) -> list[str]:
+        """
+        Resolve acsChannelIds automaticamente a partir do orgCode (mesma chave da pessoa ACS).
+
+        Ordem: override .env → árvore deviceOrg (por code/nome) → config global visitante → [].
+        Lista vazia usa permissão padrão do módulo Visitante (enableDefaultRight no servidor).
+        """
+        code = (org_code or self.settings.org_code or "001").strip()
+
+        mapped = self.settings.visitor_channel_map.get(code)
+        if mapped:
+            logger.debug(
+                "[DEFENSE_IA] acsChannelIds para orgCode=%s (mapa .env): %s",
+                code,
+                mapped,
+            )
+            return list(mapped)
+
+        if self.settings.visitor_channel_default:
+            logger.debug(
+                "[DEFENSE_IA] acsChannelIds fallback .env para orgCode=%s: %s",
+                code,
+                self.settings.visitor_channel_default,
+            )
+            return list(self.settings.visitor_channel_default)
+
+        departments = await self.list_device_org_departments()
+        by_code = _find_device_org_channels(departments, org_code=code)
+        if by_code:
+            logger.info(
+                "[DEFENSE_IA] acsChannelIds via deviceOrg orgCode=%s: %s",
+                code,
+                by_code,
+            )
+            return by_code
+
+        org_name = await self.resolve_org_name_by_code(code)
+        if org_name:
+            by_name = _find_device_org_channels(
+                departments,
+                org_name_key=_normalize_org_lookup_key(org_name),
+            )
+            if by_name:
+                logger.info(
+                    "[DEFENSE_IA] acsChannelIds via deviceOrg orgName=%r: %s",
+                    org_name,
+                    by_name,
+                )
+                return by_name
+
+        config = await self._fetch_visitor_config()
+        channels = config.get("acsChannelIds") or []
+        if isinstance(channels, list) and channels:
+            resolved = [str(item).strip() for item in channels if str(item).strip()]
+            if resolved:
+                logger.info(
+                    "[DEFENSE_IA] acsChannelIds via /config/visitor (global): %s",
+                    resolved,
+                )
+                return resolved
+
+        logger.info(
+            "[DEFENSE_IA] orgCode=%s sem canais explícitos — "
+            "enviando acsChannelIds=[] (Defense aplica direito padrão do visitante)",
+            code,
+        )
+        return []
+
+    async def _fetch_visitor_config(self) -> dict[str, Any]:
+        if not self._token:
+            await self.login()
+        response = await self._request(
+            "GET",
+            BRMS_VISITOR_CONFIG,
+            headers=self._auth_headers(),
+        )
+        if response.status_code == 401:
+            await self.login()
+            response = await self._request(
+                "GET",
+                BRMS_VISITOR_CONFIG,
+                headers=self._auth_headers(),
+            )
+        if not response.is_success or not response.content:
+            return {}
+        try:
+            body = response.json()
+        except ValueError:
+            return {}
+        if not isinstance(body, dict):
+            return {}
+        data = body.get("data", body)
+        return data if isinstance(data, dict) else {}
 
     async def _upsert_person_request(
         self, payload: SyncRequest, org_code: str | None

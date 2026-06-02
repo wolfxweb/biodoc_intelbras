@@ -42,12 +42,19 @@ def defense_client_mock() -> AsyncMock:
     from src.services.defense_ia_client import DefenseIASettings
 
     client = AsyncMock()
-    client.sync_person.return_value = {"ok": True}
+    client.sync_person.return_value = {"code": 1000, "data": {"personId": "123"}}
+    client.sync_visitor.return_value = {
+        "code": 1000,
+        "data": {"visitorId": "1", "personId": "999"},
+    }
+    client.resolve_visitor_channel_ids.return_value = ["1000174$7$0$0"]
+    client.resolve_org_name_by_code.return_value = "CHU - ESPAÇO VIVER BEM"
     client.settings = DefenseIASettings(
         server_url="http://defense.test",
         username="u",
         password="p",
         api_mode="brms",
+        sync_target="visitor",
     )
     client.token = "mock-token"
     client.is_ready = True

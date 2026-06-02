@@ -42,7 +42,14 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 | `DEFENSE_IA_USER_TYPE` | Não | Tipo de usuário na 2ª authorize BRMS. Padrão: `0` (system). |
 | `DEFENSE_IA_PUBLIC_KEY` | Sim em `brms` (produção) | RSA X.509 em Base64 (`python scripts/generate_defense_rsa_keys.py`). Campo JSON: `publicKey`. |
 | `DEFENSE_IA_USE_SERVER_PUBLICKEY` | Não | `true` = usa `publickey` da 1ª authorize (só teste, doc 3.1). |
-| `DEFENSE_IA_ORG_CODE` | Não | `orgCode` no cadastro de pessoa BRMS. Padrão: `001`. |
+| `DEFENSE_IA_ORG_CODE` | Não | `orgCode` fallback no cadastro manual e resolução de canais visitante. Padrão: `001`. |
+| `DEFENSE_IA_SYNC_TARGET` | Não | `visitor` (padrão) ou `person` (rollback pessoa ACS). |
+| `DEFENSE_IA_VISITED_PERSON_ID` | Sim em `visitor` | `personId` do anfitrião no Defense (módulo Visitante). |
+| `DEFENSE_IA_VISITOR_CHANNEL_MAP` | Sim em `visitor`* | JSON `orgCode` → `acsChannelIds`. Ver [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md). |
+| `DEFENSE_IA_VISITOR_CHANNEL_DEFAULT` | Não | Fallback CSV de `acsChannelIds` se o orgCode não estiver no mapa. |
+| `DEFENSE_IA_VISITOR_STATUS` | Não | `1` = em visita (padrão); `0` = agendado. |
+| `DEFENSE_IA_VISITED_NAME` | Não | Nome do anfitrião no payload de visitante (opcional). |
+| `DEFENSE_IA_VISITED_ORG_NAME` | Não | Organização do anfitrião no payload (opcional). |
 | `DEFENSE_IA_KEEP_ALIVE_SECONDS` | Não | Intervalo de keep-alive BRMS. Padrão: `20`. |
 | `DEFENSE_IA_TIMEOUT_SECONDS` | Não | Timeout das chamadas HTTP. Padrão: `10`. |
 | `BIODOC_INTEGRATION_KEY` | Opcional | Se definida, usada no sync/bootstrap em vez de `ADMIN_API_TOKEN`. |
@@ -274,13 +281,26 @@ docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras p
 
 ## Sincronização com a Intelbras
 
-Em modo `brms` (Defense IA 3.x), o upsert funciona assim:
+Com `DEFENSE_IA_SYNC_TARGET=visitor` (padrão), cada sync cria um **visitante**:
+
+1. Resolve `orgCode` (BioDoc `local_token` / `reguiredName`) → `acsChannelIds` via `DEFENSE_IA_VISITOR_CHANNEL_MAP`
+2. `POST /obms/api/v1.0/visitors/visitor` — Defense retorna `visitorId` + `personId`
+3. Cada re-verify BioDoc gera **nova visita** (não upsert por cartão)
+
+Configure antes do deploy: [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md).
+
+Teste manual de visitante:
+
+```bash
+docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/list_visitor_config.py
+docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_defense_sync_visitor.py
+```
+
+Rollback para pessoa ACS (`DEFENSE_IA_SYNC_TARGET=person`):
 
 1. `GET /obms/api/v1.1/acs/person/{external_id}` — verifica se a pessoa já existe
 2. Se não existir → `POST /obms/api/v1.1/acs/person` (cadastro)
 3. Se existir → `PUT /obms/api/v1.1/acs/person/{external_id}` (atualização)
-
-Teste manual de cadastro + atualização:
 
 ```bash
 docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_defense_sync_person.py
@@ -315,7 +335,9 @@ Authorization: Bearer <integration_key>
 
 Payload:
 
-`external_id` vira `personId` no Defense IA e deve ser **somente letras e números** (`^[0-9A-Za-z]+$`).
+`external_id` vai para `remark` no visitante (rastreio) ou `personId` no modo `person`. Deve ser **somente letras e números** (`^[0-9A-Za-z]+$`).
+
+Resposta em modo visitante inclui `visitor_id` e `person_id` retornados pelo Defense.
 
 ```json
 {
@@ -387,4 +409,3 @@ No Docker Compose:
 Com a API rodando:
 
 - Swagger UI: `http://localhost:8000/docs`
-- OpenAPI JSON: `http://localhost:8000/openapi.json`

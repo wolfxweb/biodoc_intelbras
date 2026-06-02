@@ -5,7 +5,7 @@
 O middleware atua como uma **ponte entre o sistema BIODOC e a API do Intelbras Defense IA**. Suporta dois fluxos de entrada:
 
 - **Fluxo manual / API direta:** `POST /v1/person/sync` — qualquer sistema envia nome, documento e imagem; o middleware autentica via `ADMIN_API_TOKEN` e repassa ao Defense IA.
-- **Fluxo nativo BioDoc:** `POST /webhook/biodoc` — o BioDoc envia um evento de liveness; o middleware consulta a API BioDoc para obter nome e foto, e sincroniza o beneficiário no Defense IA.
+- **Fluxo nativo BioDoc:** `GET /webhook/biodoc` — redirect do navegador após verify; o middleware consulta a API BioDoc e registra visitante no Defense IA.
 
 ---
 
@@ -28,7 +28,7 @@ src/
 │   ├── schemas_biodoc.py                # BiodocWebhookPayload/Response
 │   └── routes/
 │       ├── sync.py                      # POST /v1/person/sync
-│       └── webhook.py                   # POST /webhook/biodoc
+│       └── webhook.py                   # GET/POST /webhook/biodoc
 └── services/
     ├── defense_ia_client.py             # Cliente HTTP Intelbras (BRMS/legacy)
     ├── defense_ia_crypto.py             # RSA para login BRMS
@@ -44,24 +44,25 @@ src/
 ## Fluxo Webhook BioDoc
 
 ```
-BioDoc Liveness ──POST /webhook/biodoc──▶ Middleware
-                   Authorization: Bearer BIODOC_WEBHOOK_TOKEN
-                   { id_Log, reference_Id, success, status, url, percentage, ... }
+BioDoc Verify ──GET /webhook/biodoc?card=...──▶ Middleware
 
 Middleware:
-  1. Valida Bearer (BIODOC_WEBHOOK_TOKEN)
-  2. Valida success=true e reference_Id presente
-  3. GET BioDoc /integrations/log/{reference_Id}
-     → { id_Card, name, status, mainImage, path, reguiredName }
-  4. Valida beneficiário ativo (status ∈ {1,2})
-  5. Download imagem URL (mainImage > path > url) → bytes → base64
-  6. Resolve reguiredName → orgCode no Defense IA
-  7. Defense IA upsert via DefenseIAClient.sync_person()
-     external_id = id_Card, document = id_Card, face = base64
-  8. Responde BioDoc: { status, external_id, defense_sync }
+  1. Valida response=success (query params)
+  2. GET BioDoc /card/integration/mainimage?idCard=...
+  3. GET BioDoc /logs/external-audits → local_token
+  4. GET BioDoc /integrations/log/{audit_id} → foto da verify
+  5. Download imagem → base64
+  6. Resolve local_token / reguiredName → orgCode
+  7. Resolve orgCode → acsChannelIds (DEFENSE_IA_VISITOR_CHANNEL_MAP)
+  8. Defense IA visitante via DefenseIAClient.sync_visitor()
+     POST /obms/api/v1.0/visitors/visitor
+     external_id = id_Card (remark), face = base64
+  9. Página HTML de sucesso Unimed
 ```
 
-Respostas de erro que fazem o BioDoc retentar (4xx) vs. falhas de infra (502/503).
+Com `DEFENSE_IA_SYNC_TARGET=person`, o passo 7–8 usa `sync_person()` (upsert ACS).
+
+Ver [`VISITOR_CHANNEL_SETUP.md`](VISITOR_CHANNEL_SETUP.md) para mapeamento de portas.
 
 ---
 
@@ -175,15 +176,16 @@ Cliente
   ▼
 [5] logger.debug [API IN] loga o request recebido (sem base64)
   ▼
-[6] defense_client.sync_person(payload)
-  │   ├─ Busca se a pessoa já existe no Defense IA (GET por personId)
-  │   ├─ Se existe: PUT (atualiza), preservando foto se não enviada nova
-  │   └─ Se não existe: POST (cria)
-  │       • logger.debug [DEFENSE_IA OUT] loga payload enviado
-  │       • logger.debug [DEFENSE_IA IN] loga resposta recebida
+[6] sync_to_defense(payload, org_code)
+  │   Modo visitor (padrão):
+  │   ├─ resolve_visitor_channel_ids(orgCode)
+  │   └─ POST /obms/api/v1.0/visitors/visitor
+  │   Modo person (rollback):
+  │   ├─ GET person → PUT ou POST /obms/api/v1.1/acs/person
+  │       • logger.debug [DEFENSE_IA OUT/IN] loga request/response
   ▼
 [7] Resposta:
-  │  → 200 { status: "success", message: "..." }        sucesso
+  │  → 200 { status, message, visitor_id?, person_id? }  sucesso
   │  → 422 "Biometria inválida: ..."                    Defense IA recusou imagem (8044)
   │  → 503 "Defense IA não conectado"                   token ausente
   │  → 502 "API do Defense IA indisponível"             erro de servidor

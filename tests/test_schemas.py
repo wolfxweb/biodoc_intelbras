@@ -3,7 +3,7 @@ import base64
 import pytest
 from pydantic import ValidationError
 
-from src.api.schemas import SyncRequest
+from src.api.schemas import ManualSyncRequest, SyncRequest
 
 # Mínimo base64 JPEG válido: magic bytes + padding para >= 1024 bytes
 _FAKE_JPEG_B64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 2048).decode()
@@ -62,3 +62,35 @@ def test_sync_request_accepts_empty_face():
 
     assert model.biometrics is not None
     assert model.biometrics.face_image_base64 is None
+
+
+def test_manual_sync_request_requires_defense():
+    with pytest.raises(ValidationError):
+        ManualSyncRequest.model_validate(VALID_PAYLOAD)
+
+
+def test_manual_sync_request_accepts_defense_block():
+    payload = VALID_PAYLOAD | {
+        "defense": {
+            "sync_target": "visitor",
+            "org_code": "001021",
+            "acs_channel_ids": ["1000049$7$0$0"],
+        }
+    }
+    model = ManualSyncRequest.model_validate(payload)
+    assert model.defense.org_code == "001021"
+    assert model.defense.acs_channel_ids == ["1000049$7$0$0"]
+
+
+def test_defense_sync_rejects_acs_channels_for_person():
+    with pytest.raises(ValidationError):
+        ManualSyncRequest.model_validate(
+            VALID_PAYLOAD
+            | {
+                "defense": {
+                    "sync_target": "person",
+                    "org_code": "001",
+                    "acs_channel_ids": ["1000049$7$0$0"],
+                }
+            }
+        )

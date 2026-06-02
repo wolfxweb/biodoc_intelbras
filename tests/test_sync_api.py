@@ -14,6 +14,10 @@ VALID_SYNC_PAYLOAD = {
     "operation": "upsert",
     "external_id": "123",
     "person": {"full_name": "Maria Silva", "document": "12345678900"},
+    "defense": {
+        "sync_target": "visitor",
+        "org_code": "001021",
+    },
 }
 
 import base64
@@ -73,9 +77,56 @@ async def test_sync_person_success(
     assert response.status_code == 200
     assert response.json() == {
         "status": "success",
-        "message": "Usuário enviado ao Intelbras Defense IA com sucesso",
+        "message": "Visitante registrado no Intelbras Defense com sucesso",
+        "visitor_id": "1",
+        "person_id": "999",
     }
+    defense_client_mock.sync_visitor.assert_awaited_once()
+    call_args = defense_client_mock.sync_visitor.await_args
+    assert call_args.args[1] == "001021"
+    assert call_args.kwargs.get("entrance_ids") is None
+
+
+@pytest.mark.asyncio
+async def test_sync_person_rejects_missing_defense(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+):
+    create_source(db_session)
+    payload = {
+        "source": "biodoc",
+        "operation": "upsert",
+        "external_id": "123",
+        "person": {"full_name": "Maria Silva", "document": "12345678900"},
+    }
+    response = await api_client.post(
+        "/v1/person/sync",
+        json=payload,
+        headers=integration_headers(),
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_sync_person_mode_acs(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+    defense_client_mock: AsyncMock,
+):
+    create_source(db_session)
+    payload = {
+        **VALID_SYNC_PAYLOAD,
+        "defense": {"sync_target": "person", "org_code": "001015001"},
+    }
+    response = await api_client.post(
+        "/v1/person/sync",
+        json=payload,
+        headers=integration_headers(),
+    )
+    assert response.status_code == 200
+    assert "Intelbras Defense com sucesso" in response.json()["message"]
     defense_client_mock.sync_person.assert_awaited_once()
+    defense_client_mock.sync_visitor.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -163,7 +214,7 @@ async def test_sync_person_returns_502_when_defense_ia_fails(
     defense_client_mock: AsyncMock,
 ):
     create_source(db_session)
-    defense_client_mock.sync_person.side_effect = DefenseIAUnavailableError(
+    defense_client_mock.sync_visitor.side_effect = DefenseIAUnavailableError(
         "API do Defense IA indisponível"
     )
 
