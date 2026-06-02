@@ -59,7 +59,6 @@ def main() -> None:
                 "external_id": args.external_id,
                 "person": {"full_name": name, "document": "12345678900"},
                 "defense": {
-                    "sync_target": "visitor",
                     "org_code": os.getenv("DEFENSE_IA_ORG_CODE", "001"),
                 },
             }

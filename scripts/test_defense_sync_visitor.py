@@ -1,7 +1,7 @@
 """
 Teste manual de cadastro de visitante no Defense IA 3.x.
 
-Cada execução cria uma nova visita (POST /obms/api/v1.0/visitors/visitor).
+Cada execução cria uma nova visita no Defense.
 
 Uso:
   docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_defense_sync_visitor.py

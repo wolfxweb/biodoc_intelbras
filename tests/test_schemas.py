@@ -72,25 +72,8 @@ def test_manual_sync_request_requires_defense():
 def test_manual_sync_request_accepts_defense_block():
     payload = VALID_PAYLOAD | {
         "defense": {
-            "sync_target": "visitor",
             "org_code": "001021",
-            "acs_channel_ids": ["1000049$7$0$0"],
         }
     }
     model = ManualSyncRequest.model_validate(payload)
     assert model.defense.org_code == "001021"
-    assert model.defense.acs_channel_ids == ["1000049$7$0$0"]
-
-
-def test_defense_sync_rejects_acs_channels_for_person():
-    with pytest.raises(ValidationError):
-        ManualSyncRequest.model_validate(
-            VALID_PAYLOAD
-            | {
-                "defense": {
-                    "sync_target": "person",
-                    "org_code": "001",
-                    "acs_channel_ids": ["1000049$7$0$0"],
-                }
-            }
-        )

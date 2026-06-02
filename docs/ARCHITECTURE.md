@@ -55,14 +55,11 @@ Middleware:
   6. Resolve local_token / reguiredName → orgCode
   7. Resolve orgCode → acsChannelIds (DEFENSE_IA_VISITOR_CHANNEL_MAP)
   8. Defense IA visitante via DefenseIAClient.sync_visitor()
-     POST /obms/api/v1.0/visitors/visitor
      external_id = id_Card (remark), face = base64
   9. Página HTML de sucesso Unimed
 ```
 
-Com `DEFENSE_IA_SYNC_TARGET=person`, o passo 7–8 usa `sync_person()` (upsert ACS).
-
-Ver [`VISITOR_CHANNEL_SETUP.md`](VISITOR_CHANNEL_SETUP.md) para mapeamento de portas.
+Ver [`VISITOR_CHANNEL_SETUP.md`](VISITOR_CHANNEL_SETUP.md) para resolução de portas.
 
 ---
 
@@ -156,7 +153,7 @@ ADMIN_API_TOKEN=biodoc-admin-dev-token
 Cliente
   │ POST /v1/person/sync
   │ Authorization: Bearer <ADMIN_API_TOKEN>
-  │ Body: { source, operation, external_id, person, biometrics? }
+  │ Body: { source, operation, external_id, person, biometrics?, defense }
   ▼
 [1] HTTPBearer extrai o token (dependencies.py)
   ▼
@@ -167,6 +164,7 @@ Cliente
   │  • source ∈ ALLOWED_SOURCES          → 422 se não permitido
   │  • operation = "upsert"               → 422 se diferente
   │  • external_id: 1-30 chars [A-Za-z0-9] → 422 se inválido
+  │  • defense.org_code obrigatório       → 422 se ausente
   │  • face_image_base64 (se enviado):
   │      - base64 decodificável           → 422 se não
   │      - mínimo 1 KB após decode        → 422 se menor
@@ -177,11 +175,8 @@ Cliente
 [5] logger.debug [API IN] loga o request recebido (sem base64)
   ▼
 [6] sync_to_defense(payload, org_code)
-  │   Modo visitor (padrão):
   │   ├─ resolve_visitor_channel_ids(orgCode)
-  │   └─ POST /obms/api/v1.0/visitors/visitor
-  │   Modo person (rollback):
-  │   ├─ GET person → PUT ou POST /obms/api/v1.1/acs/person
+  │   └─ sync_visitor() no Defense IA
   │       • logger.debug [DEFENSE_IA OUT/IN] loga request/response
   ▼
 [7] Resposta:
@@ -234,8 +229,8 @@ LOG_LEVEL=DEBUG   # diagnóstico — mostra payloads completos (sem base64 de im
 
 Exemplo de saída em modo DEBUG para uma requisição:
 ```
-DEBUG [API IN]         source=biodoc operation=upsert external_id=Carlos01 person={'full_name': 'Carlos', 'document': '999'} biometrics.face=none
-DEBUG [DEFENSE_IA OUT] method=POST url=/obms/api/v1.1/acs/person payload={...}
+DEBUG [API IN]         source=biodoc operation=upsert external_id=Carlos01 org_code=001021 person={'full_name': 'Carlos', 'document': '999'} biometrics.face=none
+DEBUG [DEFENSE_IA OUT] method=POST url=... payload={...}
 DEBUG [DEFENSE_IA IN]  method=POST url=... status=200 body={"code":1000,"desc":"Success"}
 INFO  Defense IA sync succeeded source=biodoc external_id=Carlos01
 ```

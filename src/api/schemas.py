@@ -1,7 +1,6 @@
 import base64
-from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ALLOWED_SOURCES: list[str] = [
     "biodoc",
@@ -9,8 +8,26 @@ ALLOWED_SOURCES: list[str] = [
 
 
 class PersonData(BaseModel):
-    full_name: str = Field(..., min_length=1, description="Nome completo da pessoa no Defense IA")
-    document: str = Field(..., min_length=1, description="Documento (CPF ou identificador)")
+    """Dados cadastrais do visitante enviados ao Intelbras Defense."""
+
+    full_name: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Nome completo do visitante. Aparece no cadastro de visita no Defense "
+            "(campo `visitorName`)."
+        ),
+        examples=["Maria Silva"],
+    )
+    document: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Documento de identificação (CPF, RG ou outro identificador). "
+            "Gravado no visitante para consulta no painel."
+        ),
+        examples=["12345678900"],
+    )
 
 
 _JPEG_MAGIC = b"\xff\xd8\xff"
@@ -19,9 +36,16 @@ _MIN_IMAGE_BYTES = 1024
 
 
 class BiometricData(BaseModel):
+    """Biometria facial opcional. Omita o bloco inteiro para cadastrar sem foto."""
+
     face_image_base64: str | None = Field(
         default=None,
-        description="Foto facial em base64 (JPEG/PNG). Opcional; envia ou atualiza a face no Defense",
+        description=(
+            "Foto do rosto em base64 (JPEG ou PNG), sem prefixo `data:image/...`. "
+            "Mínimo 1 KB após decodificação. Com foto, o visitante pode passar "
+            "pelas catracas com reconhecimento facial."
+        ),
+        examples=["/9j/4AAQSkZJRg..."],
     )
 
     @field_validator("face_image_base64")
@@ -49,47 +73,39 @@ class BiometricData(BaseModel):
 
 
 class DefenseSyncOptions(BaseModel):
-    """Opções de cadastro no Intelbras Defense (obrigatório em POST /v1/person/sync)."""
+    """Destino no Intelbras Defense. Portas de acesso são resolvidas automaticamente."""
 
-    sync_target: Literal["visitor", "person"] = Field(
-        ...,
-        description=(
-            "`visitor` — nova visita via POST /obms/api/v1.0/visitors/visitor; "
-            "`person` — upsert ACS (personId = external_id)."
-        ),
-    )
     org_code: str = Field(
         ...,
         min_length=1,
-        description="Código da sub-organização no Defense (ex.: `001021`).",
-    )
-    acs_channel_ids: list[str] | None = Field(
-        default=None,
         description=(
-            "Portas de acesso (formato `1000049$7$0$0`). Só com `sync_target=visitor`. "
-            "Omitir: busca automática por org_code (fallback permissão padrão). "
-            "`[]`: permissão padrão do visitante, sem busca. "
-            "Lista preenchida: portas fixas enviadas ao Defense."
+            "Código da sub-organização no Defense (`orgCode`). Define onde a visita "
+            "é registrada. Liste códigos disponíveis com "
+            "`python scripts/list_person_orgs.py`. Ex.: `001021`."
         ),
+        examples=["001021"],
     )
-
-    @model_validator(mode="after")
-    def acs_channels_only_for_visitor(self) -> "DefenseSyncOptions":
-        if self.acs_channel_ids is not None and self.sync_target != "visitor":
-            raise ValueError("acs_channel_ids só se aplica quando sync_target=visitor")
-        return self
 
 
 class SyncRequest(BaseModel):
     source: str = Field(
         ...,
         min_length=1,
-        description="Sistema de origem (ex.: `biodoc`). Deve estar na lista permitida.",
+        description=(
+            "Sistema de origem do cadastro. Valor permitido: `biodoc` "
+            "(demais valores retornam 422)."
+        ),
+        examples=["biodoc"],
     )
     operation: str = Field(
         ...,
         pattern="^(upsert)$",
-        description="Sempre `upsert`: cria ou atualiza a pessoa no Defense IA.",
+        description=(
+            "Operação de sincronização. Use sempre `upsert`. "
+            "Cada chamada cria uma **nova visita** no Defense (novo `visitor_id`); "
+            "não atualiza visita anterior pelo `external_id`."
+        ),
+        examples=["upsert"],
     )
 
     @field_validator("source")
@@ -106,33 +122,97 @@ class SyncRequest(BaseModel):
         max_length=30,
         pattern=r"^[0-9A-Za-z]+$",
         description=(
-            "Identificador único da pessoa no Defense IA (`personId`). "
-            "Somente letras e números, máx. 30 caracteres."
+            "Identificador de rastreio no Defense (gravado em `remark`). "
+            "Use o ID do cartão BioDoc, matrícula ou código interno. "
+            "Somente letras e números (sem hífen ou espaço), máximo 30 caracteres."
         ),
+        examples=["KPHnIL", "00271368992672000"],
     )
-    person: PersonData
+    person: PersonData = Field(
+        ...,
+        description="Nome e documento do visitante.",
+    )
     biometrics: BiometricData | None = Field(
         default=None,
-        description="Foto facial em base64. Opcional; envia ou atualiza a face no Defense.",
+        description=(
+            "Biometria facial. **Opcional** — omita para cadastrar visitante sem foto. "
+            "Envie `face_image_base64` para liberar acesso por reconhecimento facial."
+        ),
     )
 
 
 class ManualSyncRequest(SyncRequest):
-    """POST /v1/person/sync — exige bloco `defense` no body (não usa .env para modo/org/portas)."""
+    """Body de `POST /v1/person/sync` — cadastro direto de visitante no Intelbras Defense."""
 
-    defense: DefenseSyncOptions
+    defense: DefenseSyncOptions = Field(
+        ...,
+        description=(
+            "Configuração de destino no Defense. Informe `org_code`; "
+            "portas de acesso são resolvidas automaticamente pelo middleware."
+        ),
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "source": "biodoc",
+                    "operation": "upsert",
+                    "external_id": "KPHnIL",
+                    "person": {
+                        "full_name": "Maria Silva",
+                        "document": "12345678900",
+                    },
+                    "biometrics": {
+                        "face_image_base64": "<JPEG ou PNG em base64, minimo 1 KB>",
+                    },
+                    "defense": {
+                        "org_code": "001021",
+                    },
+                },
+                {
+                    "source": "biodoc",
+                    "operation": "upsert",
+                    "external_id": "00271368992672000",
+                    "person": {
+                        "full_name": "Joao Souza",
+                        "document": "98765432100",
+                    },
+                    "defense": {
+                        "org_code": "001021",
+                    },
+                },
+            ]
+        }
+    )
 
 
 class SyncResponse(BaseModel):
-    status: str
-    message: str
+    status: str = Field(
+        ...,
+        description="Resultado da operação. Sucesso: `success`.",
+        examples=["success"],
+    )
+    message: str = Field(
+        ...,
+        description="Mensagem legível sobre o resultado.",
+        examples=["Visitante registrado no Intelbras Defense com sucesso"],
+    )
     visitor_id: str | None = Field(
         default=None,
-        description="ID da visita gerado pelo Defense IA (modo visitante)",
+        description=(
+            "ID da visita gerado pelo Defense (`visitorId`). "
+            "Consulte no módulo **Visitante** do painel Intelbras."
+        ),
+        examples=["163691"],
     )
     person_id: str | None = Field(
         default=None,
-        description="personId retornado pelo Defense IA",
+        description=(
+            "ID interno retornado pelo Defense ao criar o visitante. "
+            "Não é o cadastro permanente de pessoa ACS."
+        ),
+        examples=["178043801032500317"],
     )
 
 

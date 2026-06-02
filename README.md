@@ -42,12 +42,11 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 | `DEFENSE_IA_USER_TYPE` | Não | Tipo de usuário na 2ª authorize BRMS. Padrão: `0` (system). |
 | `DEFENSE_IA_PUBLIC_KEY` | Sim em `brms` (produção) | RSA X.509 em Base64 (`python scripts/generate_defense_rsa_keys.py`). Campo JSON: `publicKey`. |
 | `DEFENSE_IA_USE_SERVER_PUBLICKEY` | Não | `true` = usa `publickey` da 1ª authorize (só teste, doc 3.1). |
-| `DEFENSE_IA_ORG_CODE` | Não | `orgCode` fallback no cadastro manual e resolução de canais visitante. Padrão: `001`. |
-| `DEFENSE_IA_SYNC_TARGET` | Não | `visitor` (padrão) ou `person` (rollback pessoa ACS). |
-| `DEFENSE_IA_VISITED_PERSON_ID` | Sim em `visitor` | `personId` do anfitrião no Defense (módulo Visitante). |
-| `DEFENSE_IA_VISITOR_CHANNEL_MAP` | Sim em `visitor`* | JSON `orgCode` → `acsChannelIds`. Ver [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md). |
+| `DEFENSE_IA_ORG_CODE` | Não | Fallback de `org_code` só em scripts; no POST `/sync` use o bloco `defense`. |
+| `DEFENSE_IA_VISITOR_CHANNEL_MAP` | Não | Override JSON `orgCode` → `acsChannelIds` (exceção). Ver [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md). |
 | `DEFENSE_IA_VISITOR_CHANNEL_DEFAULT` | Não | Fallback CSV de `acsChannelIds` se o orgCode não estiver no mapa. |
 | `DEFENSE_IA_VISITOR_STATUS` | Não | `1` = em visita (padrão); `0` = agendado. |
+| `DEFENSE_IA_VISITED_PERSON_ID` | Não | Só se o painel exigir anfitrião explícito. |
 | `DEFENSE_IA_VISITED_NAME` | Não | Nome do anfitrião no payload de visitante (opcional). |
 | `DEFENSE_IA_VISITED_ORG_NAME` | Não | Organização do anfitrião no payload (opcional). |
 | `DEFENSE_IA_KEEP_ALIVE_SECONDS` | Não | Intervalo de keep-alive BRMS. Padrão: `20`. |
@@ -281,34 +280,26 @@ docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras p
 
 ## Sincronização com a Intelbras
 
-Com `DEFENSE_IA_SYNC_TARGET=visitor` (padrão), cada sync cria um **visitante**:
+Todo cadastro no Defense é **visitante**. Cada chamada gera uma **nova visita** (não upsert por cartão).
 
-1. Resolve `orgCode` (BioDoc `local_token` / `reguiredName`) → `acsChannelIds` via `DEFENSE_IA_VISITOR_CHANNEL_MAP`
-2. `POST /obms/api/v1.0/visitors/visitor` — Defense retorna `visitorId` + `personId`
-3. Cada re-verify BioDoc gera **nova visita** (não upsert por cartão)
+| Fluxo | org_code | Portas |
+|-------|----------|--------|
+| **Webhook BioDoc** (`GET /webhook/biodoc`) | Automático (`local_token` → orgCode) | Automático |
+| **POST /v1/person/sync** | Bloco `defense.org_code` no JSON | Automático |
 
-Configure antes do deploy: [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md).
+Detalhes de portas: [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md).
 
-Teste manual de visitante:
+Testes:
 
 ```bash
 docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/list_visitor_config.py
 docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_defense_sync_visitor.py
+docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_sync_via_api.py
 ```
 
-Rollback para pessoa ACS (`DEFENSE_IA_SYNC_TARGET=person`):
+### Face de visitante → leitura (sem painel)
 
-1. `GET /obms/api/v1.1/acs/person/{external_id}` — verifica se a pessoa já existe
-2. Se não existir → `POST /obms/api/v1.1/acs/person` (cadastro)
-3. Se existir → `PUT /obms/api/v1.1/acs/person/{external_id}` (atualização)
-
-```bash
-docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_defense_sync_person.py
-```
-
-### Face de visitante → pessoa de teste (sem painel)
-
-Reutiliza a foto (`authInfo.facePictures`) de um visitante já cadastrado no Defense, cria uma **pessoa ACS** com outro nome, tenta inativar (`baseInfo.status=0`) e remove com `POST .../person/delete/batch`. O visitante original **não é alterado**.
+Reutiliza a foto (`authInfo.facePictures`) de um visitante já cadastrado no Defense (somente leitura):
 
 ```bash
 # Listar visitantes
@@ -330,26 +321,29 @@ POST /v1/person/sync
 Header:
 
 ```http
-Authorization: Bearer <integration_key>
+Authorization: Bearer <ADMIN_API_TOKEN>
 ```
 
-Payload:
+Payload (sempre visitante):
 
-`external_id` vai para `remark` no visitante (rastreio) ou `personId` no modo `person`. Deve ser **somente letras e números** (`^[0-9A-Za-z]+$`).
+`external_id` vai para `remark` no visitante (rastreio). Somente letras e números, máx. 30 caracteres.
 
-Resposta em modo visitante inclui `visitor_id` e `person_id` retornados pelo Defense.
+Resposta inclui `visitor_id` e `person_id` (interno do Defense).
 
 ```json
 {
   "source": "biodoc",
   "operation": "upsert",
-  "external_id": "12345",
+  "external_id": "00271368992672000",
   "person": {
     "full_name": "Maria Silva",
     "document": "12345678900"
   },
   "biometrics": {
     "face_image_base64": "..."
+  },
+  "defense": {
+    "org_code": "001021"
   }
 }
 ```
@@ -366,18 +360,21 @@ Exemplo:
 
 ```bash
 curl -X POST http://localhost:8000/v1/person/sync \
-  -H "Authorization: Bearer $INTEGRATION_KEY" \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "biodoc",
     "operation": "upsert",
-    "external_id": "123",
+    "external_id": "00271368992672000",
     "person": {
       "full_name": "Maria Silva",
       "document": "12345678900"
     },
     "biometrics": {
       "face_image_base64": "base64-da-imagem"
+    },
+    "defense": {
+      "org_code": "001021"
     }
   }'
 ```

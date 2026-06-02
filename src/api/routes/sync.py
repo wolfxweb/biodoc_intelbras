@@ -18,24 +18,27 @@ router = APIRouter(
 @router.post(
     "/sync",
     response_model=SyncResponse,
-    summary="Cadastro direto no Intelbras Defense",
+    summary="Cadastro de visitante no Intelbras Defense",
     description=(
-        "**Cadastro direto no Intelbras Defense** — envie nome, documento, foto e o bloco "
-        "`defense` (modo, sub-org e portas).\n\n"
-        "**Bloco `defense` (obrigatório):**\n"
-        "- `sync_target`: `visitor` (nova visita) ou `person` (upsert ACS)\n"
-        "- `org_code`: sub-organização no Defense (ex.: `001021`)\n"
-        "- `acs_channel_ids` (opcional, só com `visitor`): portas no Defense "
-        "(ex.: `1000049$7$0$0`)\n"
-        "  - **Não informar** → middleware busca portas pelo `org_code`; "
-        "se não achar, usa permissão padrão\n"
-        "  - **`[]`** → permissão padrão do visitante (Configurações → Visitante), "
-        "sem busca automática\n"
-        "  - **Lista preenchida** → usa exatamente essas portas\n\n"
-        "**Autenticação:** `Authorization: Bearer <ADMIN_API_TOKEN>`\n\n"
+        "**Cadastro direto de visitante no Intelbras Defense.** "
+        "Cada chamada cria uma nova visita; portas de acesso são resolvidas "
+        "automaticamente pelo middleware.\n\n"
+        "**Autenticação:** header `Authorization: Bearer <ADMIN_API_TOKEN>`\n\n"
+        "**Campos do body:**\n\n"
+        "| Campo | Obrigatório | Uso |\n"
+        "|-------|-------------|-----|\n"
+        "| `source` | Sim | Sistema de origem. Use `biodoc`. |\n"
+        "| `operation` | Sim | Sempre `upsert` (nova visita a cada chamada). |\n"
+        "| `external_id` | Sim | Rastreio no Defense (`remark`). Alfanumérico, máx. 30 chars. "
+        "Ex.: ID do cartão BioDoc. |\n"
+        "| `person.full_name` | Sim | Nome completo do visitante. |\n"
+        "| `person.document` | Sim | CPF ou outro documento. |\n"
+        "| `biometrics` | Não | Omita para cadastro sem foto. |\n"
+        "| `biometrics.face_image_base64` | Não | JPEG/PNG em base64 (mín. 1 KB). |\n"
+        "| `defense.org_code` | Sim | Sub-organização no Defense. Ex.: `001021`. "
+        "Liste códigos com `scripts/list_person_orgs.py`. |\n\n"
         "**Quando usar:** integração direta (ERP, script, homologação), reenvio ou "
-        "correção manual.\n\n"
-        "Com `biometrics.face_image_base64`, a foto facial é enviada ao Defense."
+        "correção manual."
     ),
 )
 async def sync_person(
@@ -46,12 +49,11 @@ async def sync_person(
     if payload.biometrics and payload.biometrics.face_image_base64:
         face_info = f"<IMG:{len(payload.biometrics.face_image_base64)}_chars>"
     logger.debug(
-        "[API IN] source=%s operation=%s external_id=%s sync_target=%s org_code=%s "
+        "[API IN] source=%s operation=%s external_id=%s org_code=%s "
         "person=%s biometrics.face=%s",
         payload.source,
         payload.operation,
         payload.external_id,
-        payload.defense.sync_target,
         payload.defense.org_code,
         payload.person.model_dump(),
         face_info,
@@ -60,9 +62,8 @@ async def sync_person(
     sync_result = await sync_to_defense(
         payload,
         defense_client,
-        sync_target=payload.defense.sync_target,
+        sync_target="visitor",
         org_code=payload.defense.org_code,
-        acs_channel_ids=payload.defense.acs_channel_ids,
         log_context=f"source={payload.source} external_id={payload.external_id}",
     )
 
@@ -73,13 +74,9 @@ async def sync_person(
         sync_result.get("visitor_id"),
         sync_result.get("person_id"),
     )
-    if payload.defense.sync_target == "visitor":
-        message = "Visitante registrado no Intelbras Defense com sucesso"
-    else:
-        message = "Usuário enviado ao Intelbras Defense com sucesso"
     return SyncResponse(
         status="success",
-        message=message,
+        message="Visitante registrado no Intelbras Defense com sucesso",
         visitor_id=sync_result.get("visitor_id"),
         person_id=sync_result.get("person_id"),
     )
