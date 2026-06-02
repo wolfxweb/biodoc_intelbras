@@ -36,14 +36,13 @@ _MIN_IMAGE_BYTES = 1024
 
 
 class BiometricData(BaseModel):
-    """Biometria facial opcional. Omita o bloco inteiro para cadastrar sem foto."""
+    """Biometria facial (opcional no fluxo interno; POST /sync exige foto)."""
 
     face_image_base64: str | None = Field(
         default=None,
         description=(
             "Foto do rosto em base64 (JPEG ou PNG), sem prefixo `data:image/...`. "
-            "Mínimo 1 KB após decodificação. Com foto, o visitante pode passar "
-            "pelas catracas com reconhecimento facial."
+            "Mínimo 1 KB após decodificação."
         ),
         examples=["/9j/4AAQSkZJRg..."],
     )
@@ -53,9 +52,13 @@ class BiometricData(BaseModel):
     def validate_face_image(cls, v: str | None) -> str | None:
         if v is None:
             return None
+        return cls._validate_face_bytes(v)
+
+    @classmethod
+    def _validate_face_bytes(cls, v: str) -> str:
         v = v.strip().replace("\n", "").replace("\r", "").replace(" ", "")
         if not v:
-            return None
+            raise ValueError("face_image_base64 não pode ser vazio")
         try:
             raw = base64.b64decode(v, validate=False)
         except Exception:
@@ -72,6 +75,26 @@ class BiometricData(BaseModel):
         return v
 
 
+class RequiredBiometricData(BaseModel):
+    """Foto facial obrigatória em POST /v1/person/sync."""
+
+    face_image_base64: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Foto do rosto em base64 (JPEG ou PNG), sem prefixo `data:image/...`. "
+            "Obrigatória — mínimo 1 KB após decodificação. "
+            "Usada para reconhecimento facial nas catracas."
+        ),
+        examples=["/9j/4AAQSkZJRg..."],
+    )
+
+    @field_validator("face_image_base64")
+    @classmethod
+    def validate_face_image(cls, v: str) -> str:
+        return BiometricData._validate_face_bytes(v)
+
+
 class DefenseSyncOptions(BaseModel):
     """Destino no Intelbras Defense. Portas de acesso são resolvidas automaticamente."""
 
@@ -79,9 +102,12 @@ class DefenseSyncOptions(BaseModel):
         ...,
         min_length=1,
         description=(
-            "Código da sub-organização no Defense (`orgCode`). Define onde a visita "
-            "é registrada. Liste códigos disponíveis com "
-            "`python scripts/list_person_orgs.py`. Ex.: `001021`."
+            "Código da **sub-organização** no Defense (`orgCode`) — local/unidade onde a "
+            "visita é registrada (ex.: unidade BioDoc `001021`). "
+            "**Não** é código nem nome de porta/catacra; as portas com acesso são "
+            "definidas automaticamente pelo middleware a partir deste `org_code`. "
+            "Liste sub-organizações: `python scripts/list_person_orgs.py`. "
+            "Para ver portas padrão do servidor: `python scripts/list_visitor_config.py`."
         ),
         examples=["001021"],
     )
@@ -134,21 +160,24 @@ class SyncRequest(BaseModel):
     )
     biometrics: BiometricData | None = Field(
         default=None,
-        description=(
-            "Biometria facial. **Opcional** — omita para cadastrar visitante sem foto. "
-            "Envie `face_image_base64` para liberar acesso por reconhecimento facial."
-        ),
+        description="Biometria facial (uso interno). No POST `/sync`, a foto é obrigatória.",
     )
 
 
 class ManualSyncRequest(SyncRequest):
     """Body de `POST /v1/person/sync` — cadastro direto de visitante no Intelbras Defense."""
 
+    biometrics: RequiredBiometricData = Field(
+        ...,
+        description="Foto facial obrigatória para cadastro com reconhecimento facial.",
+    )
+
     defense: DefenseSyncOptions = Field(
         ...,
         description=(
-            "Configuração de destino no Defense. Informe `org_code`; "
-            "portas de acesso são resolvidas automaticamente pelo middleware."
+            "Destino no Defense. Informe apenas `org_code` (sub-organização/local). "
+            "Não envie código ou nome de porta — o middleware resolve `acsChannelIds` "
+            "automaticamente (mapa .env, árvore deviceOrg ou permissão padrão do visitante)."
         ),
     )
 
@@ -165,18 +194,6 @@ class ManualSyncRequest(SyncRequest):
                     },
                     "biometrics": {
                         "face_image_base64": "<JPEG ou PNG em base64, minimo 1 KB>",
-                    },
-                    "defense": {
-                        "org_code": "001021",
-                    },
-                },
-                {
-                    "source": "biodoc",
-                    "operation": "upsert",
-                    "external_id": "00271368992672000",
-                    "person": {
-                        "full_name": "Joao Souza",
-                        "document": "98765432100",
                     },
                     "defense": {
                         "org_code": "001021",

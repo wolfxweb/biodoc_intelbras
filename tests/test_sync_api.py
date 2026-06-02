@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock
 
+import base64
+
 import httpx
 import pytest
 from sqlalchemy.orm import Session
@@ -8,6 +10,7 @@ from src.core.security import hash_token
 from src.models.integration_source import IntegrationSource
 from src.services.defense_ia_client import DefenseIAUnavailableError
 
+_FAKE_JPEG_B64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 2048).decode()
 
 VALID_SYNC_PAYLOAD = {
     "source": "biodoc",
@@ -17,15 +20,10 @@ VALID_SYNC_PAYLOAD = {
     "defense": {
         "org_code": "001021",
     },
-}
-
-import base64
-_FAKE_JPEG_B64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 2048).decode()
-
-VALID_SYNC_PAYLOAD_WITH_FACE = {
-    **VALID_SYNC_PAYLOAD,
     "biometrics": {"face_image_base64": _FAKE_JPEG_B64},
 }
+
+VALID_SYNC_PAYLOAD_WITH_FACE = VALID_SYNC_PAYLOAD
 
 
 def create_source(db_session: Session, token: str = "integration-token") -> None:
@@ -84,6 +82,27 @@ async def test_sync_person_success(
     call_args = defense_client_mock.sync_visitor.await_args
     assert call_args.args[1] == "001021"
     assert call_args.kwargs.get("entrance_ids") is None
+
+
+@pytest.mark.asyncio
+async def test_sync_rejects_missing_biometrics(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+):
+    create_source(db_session)
+    payload = {
+        "source": "biodoc",
+        "operation": "upsert",
+        "external_id": "123",
+        "person": {"full_name": "Maria Silva", "document": "12345678900"},
+        "defense": {"org_code": "001021"},
+    }
+    response = await api_client.post(
+        "/v1/person/sync",
+        json=payload,
+        headers=integration_headers(),
+    )
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio

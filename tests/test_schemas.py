@@ -64,6 +64,17 @@ def test_sync_request_accepts_empty_face():
     assert model.biometrics.face_image_base64 is None
 
 
+def test_manual_sync_request_requires_biometrics():
+    payload = VALID_PAYLOAD | {
+        "defense": {
+            "org_code": "001021",
+        }
+    }
+    payload.pop("biometrics")
+    with pytest.raises(ValidationError):
+        ManualSyncRequest.model_validate(payload)
+
+
 def test_manual_sync_request_requires_defense():
     with pytest.raises(ValidationError):
         ManualSyncRequest.model_validate(VALID_PAYLOAD)

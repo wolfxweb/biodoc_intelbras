@@ -348,13 +348,9 @@ Resposta inclui `visitor_id` e `person_id` (interno do Defense).
 }
 ```
 
-`biometrics` é opcional:
+`biometrics.face_image_base64` é **obrigatório** — JPEG ou PNG em base64 (mín. 1 KB decodificado).
 
-- **Criação** sem foto: cadastro sem `facePictures`.
-- **Atualização** sem foto: mantém as fotos já existentes no Defense (não envia lista vazia no PUT).
-- **Com** `biometrics.face_image_base64`: envia ou substitui a foto.
-
-Scripts: `python scripts/test_sync_via_api.py --no-face` (usa `BIODOC_INTEGRATION_KEY` do `.env`).
+Scripts: `python scripts/test_sync_via_api.py` (usa foto de teste do `.env`/fixtures).
 
 Exemplo:
 

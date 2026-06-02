@@ -153,7 +153,7 @@ ADMIN_API_TOKEN=biodoc-admin-dev-token
 Cliente
   │ POST /v1/person/sync
   │ Authorization: Bearer <ADMIN_API_TOKEN>
-  │ Body: { source, operation, external_id, person, biometrics?, defense }
+  │ Body: { source, operation, external_id, person, biometrics, defense }
   ▼
 [1] HTTPBearer extrai o token (dependencies.py)
   ▼
@@ -197,6 +197,8 @@ Cliente
 | `external_id` | 1–30 caracteres, somente `[A-Za-z0-9]` | 422 |
 | `person.full_name` | Mínimo 1 caractere | 422 |
 | `person.document` | Mínimo 1 caractere | 422 |
+| `defense.org_code` | Obrigatório em POST `/sync` | 422 |
+| `biometrics` | Obrigatório em POST `/sync` | 422 |
 | `biometrics.face_image_base64` | Base64 válido + mínimo 1 KB + JPEG ou PNG | 422 |
 
 Para adicionar um novo sistema de origem, basta incluir no vetor em `src/api/schemas.py`:

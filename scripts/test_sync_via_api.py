@@ -7,7 +7,6 @@ Teste do fluxo BIODOC -> middleware (localhost) -> Defense IA (IP do .env).
 Uso (middleware rodando: docker compose up -d):
   python scripts/test_sync_via_api.py
   python scripts/test_sync_via_api.py biodocapi001
-  python scripts/test_sync_via_api.py biodocapi001 --no-face
 """
 import argparse
 import os
@@ -28,7 +27,6 @@ SOURCE_NAME = os.getenv("TEST_SOURCE_NAME", "biodoc")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Teste sync via middleware")
     parser.add_argument("external_id", nargs="?", default="biodocapi001")
-    parser.add_argument("--no-face", action="store_true", help="Sync sem biometrics/face")
     return parser.parse_args()
 
 
@@ -40,11 +38,10 @@ def main() -> None:
         print("Defina ADMIN_API_TOKEN no .env")
         sys.exit(1)
 
-    face_b64: str | None = None if args.no_face else load_test_face_base64()
+    face_b64 = load_test_face_base64()
     print(f"Middleware: {BASE_URL}")
     print(f"Defense IA: {os.getenv('DEFENSE_IA_SERVER_URL')} (via .env do container)")
-    print(f"external_id: {args.external_id}")
-    print(f"Com face: {'nao' if args.no_face else 'sim'}\n")
+    print(f"external_id: {args.external_id}\n")
 
     with httpx.Client(base_url=BASE_URL, timeout=60.0) as client:
         integration_key = _ensure_source(client)
@@ -61,9 +58,8 @@ def main() -> None:
                 "defense": {
                     "org_code": os.getenv("DEFENSE_IA_ORG_CODE", "001"),
                 },
+                "biometrics": {"face_image_base64": face_b64},
             }
-            if face_b64:
-                payload["biometrics"] = {"face_image_base64": face_b64}
             response = client.post(
                 "/v1/person/sync",
                 headers={"Authorization": f"Bearer {integration_key}"},
