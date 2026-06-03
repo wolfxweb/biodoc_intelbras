@@ -42,7 +42,7 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 | `DEFENSE_IA_USER_TYPE` | Não | Tipo de usuário na 2ª authorize BRMS. Padrão: `0` (system). |
 | `DEFENSE_IA_PUBLIC_KEY` | Sim em `brms` (produção) | RSA X.509 em Base64 (`python scripts/generate_defense_rsa_keys.py`). Campo JSON: `publicKey`. |
 | `DEFENSE_IA_USE_SERVER_PUBLICKEY` | Não | `true` = usa `publickey` da 1ª authorize (só teste, doc 3.1). |
-| `DEFENSE_IA_ORG_CODE` | Não | Fallback de `org_code` só em scripts; no POST `/sync` use o bloco `defense`. |
+| `DEFENSE_IA_ORG_CODE` | Não | Fallback interno; no POST `/sync` use `defense.org_code` com o nome da regra de acesso no painel. |
 | `DEFENSE_IA_VISITOR_CHANNEL_MAP` | Não | Override JSON `orgCode` → `acsChannelIds` (exceção). Ver [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md). |
 | `DEFENSE_IA_VISITOR_CHANNEL_DEFAULT` | Não | Fallback CSV de `acsChannelIds` se o orgCode não estiver no mapa. |
 | `DEFENSE_IA_VISITOR_STATUS` | Não | `1` = em visita (padrão); `0` = agendado. |
@@ -282,12 +282,12 @@ docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras p
 
 Todo cadastro no Defense é **visitante**. Cada chamada gera uma **nova visita** (não upsert por cartão).
 
-| Fluxo | org_code | Portas |
-|-------|----------|--------|
-| **Webhook BioDoc** (`GET /webhook/biodoc`) | Automático (`local_token` → orgCode) | Automático |
-| **POST /v1/person/sync** | Bloco `defense.org_code` no JSON | Automático |
+| Fluxo | Destino no Defense | Portas |
+|-------|-------------------|--------|
+| **Webhook BioDoc** (`GET /webhook/biodoc`) | Automático (`local_token` / `reguiredName` → host visitante) | Automático |
+| **POST /v1/person/sync** | `defense.org_code` = **nome da regra de acesso** no painel | Automático |
 
-Detalhes de portas: [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md).
+Exemplo de body para sync manual: [`data/test_post_sync.json`](data/test_post_sync.json) — resumo em [`data/test_post_sync.md`](data/test_post_sync.md).
 
 Testes:
 
@@ -343,7 +343,7 @@ Resposta inclui `visitor_id` e `person_id` (interno do Defense).
     "face_image_base64": "..."
   },
   "defense": {
-    "org_code": "001021"
+    "org_code": "CHU - CENTRAL"
   }
 }
 ```
@@ -370,7 +370,7 @@ curl -X POST http://localhost:8000/v1/person/sync \
       "face_image_base64": "base64-da-imagem"
     },
     "defense": {
-      "org_code": "001021"
+      "org_code": "CHU - CENTRAL"
     }
   }'
 ```

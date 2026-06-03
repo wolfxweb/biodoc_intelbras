@@ -52,10 +52,10 @@ Middleware:
   3. GET BioDoc /logs/external-audits → local_token
   4. GET BioDoc /integrations/log/{audit_id} → foto da verify
   5. Download imagem → base64
-  6. Resolve local_token / reguiredName → orgCode
-  7. Resolve orgCode → acsChannelIds (DEFENSE_IA_VISITOR_CHANNEL_MAP)
-  8. Defense IA visitante via DefenseIAClient.sync_visitor()
-     external_id = id_Card (remark), face = base64
+  6. `local_token` / `reguiredName` → **host visitante** (texto, ex. `"recepção central"`)
+  7. Middleware copia `acsChannelIds` via API 6.2.10 (visitantes existentes com mesmo host)
+  8. Defense IA visitante via `DefenseIAClient.sync_visitor()`
+     `visitedName` = host, `external_id` = id_Card (remark), face = base64
   9. Página HTML de sucesso Unimed
 ```
 
@@ -164,7 +164,7 @@ Cliente
   │  • source ∈ ALLOWED_SOURCES          → 422 se não permitido
   │  • operation = "upsert"               → 422 se diferente
   │  • external_id: 1-30 chars [A-Za-z0-9] → 422 se inválido
-  │  • defense.org_code obrigatório       → 422 se ausente
+  │  • defense.org_code obrigatório       → 422 se ausente (nome da **regra de acesso** no painel)
   │  • face_image_base64 (se enviado):
   │      - base64 decodificável           → 422 se não
   │      - mínimo 1 KB após decode        → 422 se menor
@@ -174,10 +174,10 @@ Cliente
   ▼
 [5] logger.debug [API IN] loga o request recebido (sem base64)
   ▼
-[6] sync_to_defense(payload, org_code)
-  │   ├─ resolve_visitor_channel_ids(orgCode)
+[6] sync_to_defense(payload, defense=…)
+  │   ├─ access_rule := defense.org_code (nome da regra de acesso no painel)
+  │   ├─ resolve portas via API ACS a partir da regra
   │   └─ sync_visitor() no Defense IA
-  │       • logger.debug [DEFENSE_IA OUT/IN] loga request/response
   ▼
 [7] Resposta:
   │  → 200 { status, message, visitor_id?, person_id? }  sucesso
@@ -197,7 +197,7 @@ Cliente
 | `external_id` | 1–30 caracteres, somente `[A-Za-z0-9]` | 422 |
 | `person.full_name` | Mínimo 1 caractere | 422 |
 | `person.document` | Mínimo 1 caractere | 422 |
-| `defense.org_code` | Obrigatório em POST `/sync` | 422 |
+| `defense.org_code` | Obrigatório em POST `/sync` — **nome da regra de acesso** no painel Defense (ex.: `"CHU - CENTRAL"`) | 422 |
 | `biometrics` | Obrigatório em POST `/sync` | 422 |
 | `biometrics.face_image_base64` | Base64 válido + mínimo 1 KB + JPEG ou PNG | 422 |
 
@@ -231,7 +231,7 @@ LOG_LEVEL=DEBUG   # diagnóstico — mostra payloads completos (sem base64 de im
 
 Exemplo de saída em modo DEBUG para uma requisição:
 ```
-DEBUG [API IN]         source=biodoc operation=upsert external_id=Carlos01 org_code=001021 person={'full_name': 'Carlos', 'document': '999'} biometrics.face=none
+DEBUG [API IN]         source=biodoc operation=upsert external_id=Carlos01 org_code=CHU - CENTRAL person={'full_name': 'Carlos', 'document': '999'} biometrics.face=<IMG:...>
 DEBUG [DEFENSE_IA OUT] method=POST url=... payload={...}
 DEBUG [DEFENSE_IA IN]  method=POST url=... status=200 body={"code":1000,"desc":"Success"}
 INFO  Defense IA sync succeeded source=biodoc external_id=Carlos01

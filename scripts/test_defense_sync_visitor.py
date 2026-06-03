@@ -5,7 +5,7 @@ Cada execução cria uma nova visita no Defense.
 
 Uso:
   docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_defense_sync_visitor.py
-  docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_defense_sync_visitor.py cardtest001 --org-code 001021
+  docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras python scripts/test_defense_sync_visitor.py cardtest001 --org-code "recepção central"
 """
 import argparse
 import asyncio
@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--org-code",
         default="",
-        help="orgCode para resolver acsChannelIds (default: DEFENSE_IA_ORG_CODE)",
+        help="Host visitante (visitedName), ex.: recepção central (default: DEFENSE_IA_VISITED_NAME)",
     )
     return parser.parse_args()
 
@@ -73,10 +73,13 @@ async def main() -> None:
         print("DEFENSE_IA_SYNC_TARGET nao e 'visitor' — ajuste o .env")
         sys.exit(1)
 
-    org_code = args.org_code or client.settings.org_code or "001"
+    visited_name = (args.org_code or client.settings.visited_name or "").strip()
+    if not visited_name:
+        print("Informe --org-code com o host visitante (ex.: recepção central)")
+        sys.exit(1)
     print(f"Servidor: {client.settings.server_url}")
     print(f"external_id (remark): {external_id}")
-    print(f"orgCode (canais): {org_code}")
+    print(f"visitedName (host): {visited_name}")
     print(f"Com face: {'nao' if args.no_face else 'sim'}\n")
 
     try:
@@ -85,7 +88,7 @@ async def main() -> None:
         payload = SyncRequest.model_validate(
             sync_payload(external_id, args.name, face_b64)
         )
-        result = await client.sync_visitor(payload, org_code)
+        result = await client.sync_visitor(payload, visited_name)
         print(f"Resposta Defense: {result}\n")
         data = result.get("data", result)
         if isinstance(data, dict):

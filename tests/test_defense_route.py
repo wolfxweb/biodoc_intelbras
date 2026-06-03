@@ -22,14 +22,12 @@ _DUMMY_JPEG = b"\xff\xd8\xff" + b"\x00" * 2048
 MOCK_USER_NAME = "CARLOS EDUARDO LOBO"
 
 
-def _make_defense_mock(resolved_org_code: str = "001021") -> AsyncMock:
+def _make_defense_mock(resolved_host: str = "CHU - ESPAÇO VIVER BEM") -> AsyncMock:
     client = AsyncMock()
     client.sync_visitor.return_value = {
         "code": 1000,
         "data": {"visitorId": "42", "personId": "999"},
     }
-    client.resolve_org_code.return_value = resolved_org_code
-    client.resolve_org_name_by_code.return_value = "CHU - ESPAÇO VIVER BEM"
     client.settings = DefenseIASettings(
         server_url="http://defense.test",
         username="u",
@@ -72,7 +70,7 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
 
     caplog.set_level(logging.INFO, logger="biodoc_intelbras")
 
-    defense_mock = _make_defense_mock(resolved_org_code="001021")
+    defense_mock = _make_defense_mock()
     biodoc_mock = AsyncMock(spec=BiodocClient)
     biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
         name=MOCK_USER_NAME,
@@ -140,14 +138,12 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
     assert any("imagem resolvida" in m for m in messages)
     assert any("integrations/log" in m for m in messages)
     assert any("verify-capture.jpg" in m for m in messages)
-    assert any("orgCode resolvido" in m for m in messages)
-    assert any("001021" in m for m in messages)
+    assert any("host visitante resolvido" in m for m in messages)
     download_mock.assert_awaited_once_with("https://example.com/verify-capture.jpg")
     defense_mock.sync_visitor.assert_awaited_once()
-    defense_mock.resolve_org_code.assert_awaited_once_with("CHU - ESPAÇO VIVER BEM")
     call_args = defense_mock.sync_visitor.await_args
     assert call_args is not None
-    assert call_args[0][1] == "001021"
+    assert call_args[0][1] == "CHU - ESPAÇO VIVER BEM"
 
 
 @pytest.mark.asyncio

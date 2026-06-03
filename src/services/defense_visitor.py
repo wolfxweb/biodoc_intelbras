@@ -12,18 +12,24 @@ VISITOR_DETAIL = "/obms/api/v1.0/visitors/visitor/{visitor_id}"
 PERSON_DELETE_BATCH = "/obms/api/v1.1/acs/person/delete/batch"
 
 
-def visitor_page_query() -> dict[str, str]:
+def visitor_page_query(
+    *,
+    key: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    lookback_days: int = 730,
+) -> dict[str, str]:
     now = int(time.time())
     return {
         "direction": "1",
         "orderType": "0",
         "endTime": str(now + 86400),
         "timeType": "-1",
-        "page": "1",
-        "key": "",
+        "page": str(page),
+        "key": key,
         "status": "-1",
-        "startTime": str(now - 86400 * 30),
-        "pagesize": "20",
+        "startTime": str(now - 86400 * lookback_days),
+        "pagesize": str(page_size),
     }
 
 

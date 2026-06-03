@@ -1,5 +1,11 @@
 # Vínculo de portas: BioDoc → Defense IA via `orgCode`
 
+> **POST `/v1/person/sync`:** em `defense.org_code`, envie o **nome da regra de acesso**
+> no painel Defense (ex.: `CHU - CENTRAL`). Ver [`VISITOR_CHANNEL_SETUP.md`](./VISITOR_CHANNEL_SETUP.md).
+>
+> Este documento trata do fluxo **webhook BioDoc → cadastro de pessoa** com roteamento por
+> **`reguiredName` → `orgCode`** de sub-organização (legado Unimed).
+
 Guia operacional para liberar pessoas em portas específicas do Intelbras
 Defense IA usando o campo **`reguiredName`** do BioDoc como chave de
 roteamento.

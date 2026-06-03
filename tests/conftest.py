@@ -47,8 +47,7 @@ def defense_client_mock() -> AsyncMock:
         "code": 1000,
         "data": {"visitorId": "1", "personId": "999"},
     }
-    client.resolve_visitor_channel_ids.return_value = ["1000174$7$0$0"]
-    client.resolve_org_name_by_code.return_value = "CHU - ESPAÇO VIVER BEM"
+    client.resolve_channels_by_visited_name = AsyncMock(return_value=["1000174$7$0$0"])
     client.settings = DefenseIASettings(
         server_url="http://defense.test",
         username="u",

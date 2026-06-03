@@ -67,7 +67,7 @@ def test_sync_request_accepts_empty_face():
 def test_manual_sync_request_requires_biometrics():
     payload = VALID_PAYLOAD | {
         "defense": {
-            "org_code": "001021",
+            "org_code": "recepção central",
         }
     }
     payload.pop("biometrics")
@@ -83,8 +83,8 @@ def test_manual_sync_request_requires_defense():
 def test_manual_sync_request_accepts_defense_block():
     payload = VALID_PAYLOAD | {
         "defense": {
-            "org_code": "001021",
+            "org_code": "recepção central",
         }
     }
     model = ManualSyncRequest.model_validate(payload)
-    assert model.defense.org_code == "001021"
+    assert model.defense.org_code == "recepção central"

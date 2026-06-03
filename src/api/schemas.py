@@ -1,6 +1,7 @@
 import base64
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 ALLOWED_SOURCES: list[str] = [
     "biodoc",
@@ -102,15 +103,23 @@ class DefenseSyncOptions(BaseModel):
         ...,
         min_length=1,
         description=(
-            "Código da **sub-organização** no Defense (`orgCode`) — local/unidade onde a "
-            "visita é registrada (ex.: unidade BioDoc `001021`). "
-            "**Não** é código nem nome de porta/catacra; as portas com acesso são "
-            "definidas automaticamente pelo middleware a partir deste `org_code`. "
-            "Liste sub-organizações: `python scripts/list_person_orgs.py`. "
-            "Para ver portas padrão do servidor: `python scripts/list_visitor_config.py`."
+            "Nome da **regra de acesso** cadastrada no painel Defense "
+            "(Autorização → Regra de acesso), ex.: `CHU - CENTRAL`."
         ),
-        examples=["001021"],
+        examples=["CHU - CENTRAL"],
     )
+    visited_name: SkipJsonSchema[str | None] = None
+
+    def resolved_visited_name(self) -> str:
+        return self.resolved_host_name()
+
+    def resolved_host_name(self) -> str:
+        if self.visited_name and self.visited_name.strip():
+            return self.visited_name.strip()
+        return self.org_code.strip()
+
+    def resolved_access_rule_name(self) -> str:
+        return self.org_code.strip()
 
 
 class SyncRequest(BaseModel):
@@ -174,11 +183,7 @@ class ManualSyncRequest(SyncRequest):
 
     defense: DefenseSyncOptions = Field(
         ...,
-        description=(
-            "Destino no Defense. Informe apenas `org_code` (sub-organização/local). "
-            "Não envie código ou nome de porta — o middleware resolve `acsChannelIds` "
-            "automaticamente (mapa .env, árvore deviceOrg ou permissão padrão do visitante)."
-        ),
+        description="Destino no Defense — informe o nome da regra de acesso em `org_code`.",
     )
 
     model_config = ConfigDict(
@@ -196,7 +201,7 @@ class ManualSyncRequest(SyncRequest):
                         "face_image_base64": "<JPEG ou PNG em base64, minimo 1 KB>",
                     },
                     "defense": {
-                        "org_code": "001021",
+                        "org_code": "CHU - CENTRAL",
                     },
                 },
             ]

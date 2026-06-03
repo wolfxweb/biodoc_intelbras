@@ -33,9 +33,6 @@ async def main() -> None:
     print(f"\nacsChannelIds padrao ({len(channels)}):")
     for channel in channels:
         print(f"  - {channel}")
-    if client.settings.visitor_channel_map:
-        print("\nDEFENSE_IA_VISITOR_CHANNEL_MAP:")
-        print(json.dumps(client.settings.visitor_channel_map, indent=2, ensure_ascii=False))
     await client.close()
 
 

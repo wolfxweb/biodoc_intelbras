@@ -18,7 +18,7 @@ VALID_SYNC_PAYLOAD = {
     "external_id": "123",
     "person": {"full_name": "Maria Silva", "document": "12345678900"},
     "defense": {
-        "org_code": "001021",
+        "org_code": "recepção central",
     },
     "biometrics": {"face_image_base64": _FAKE_JPEG_B64},
 }
@@ -80,7 +80,7 @@ async def test_sync_person_success(
     }
     defense_client_mock.sync_visitor.assert_awaited_once()
     call_args = defense_client_mock.sync_visitor.await_args
-    assert call_args.args[1] == "001021"
+    assert call_args.args[1] == "recepção central"
     assert call_args.kwargs.get("entrance_ids") is None
 
 

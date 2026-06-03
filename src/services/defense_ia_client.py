@@ -1,8 +1,11 @@
 import asyncio
+import difflib
 import hashlib
 import json
 import os
 import time
+import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -15,6 +18,7 @@ from src.services.defense_ia_crypto import resolve_login_public_key
 API_MODE_BRMS = "brms"
 BRMS_PERSON = "/obms/api/v1.1/acs/person"
 BRMS_VISITOR = "/obms/api/v1.0/visitors/visitor"
+BRMS_VISITOR_PAGE = "/obms/api/v1.0/visitors/visitor/page"
 API_MODE_LEGACY = "legacy"
 
 
@@ -42,8 +46,14 @@ BRMS_PERSON_GROUP_LIST = "/obms/api/v1.1/acs/person-group/list"
 BRMS_PERSON_DELETE_BATCH = "/obms/api/v1.1/acs/person/delete/batch"
 BRMS_VISITOR_CONFIG = "/brms/api/v1.1/config/visitor"
 BRMS_DEVICE_ORG_TREE = "/brms/api/v1.0/tree/deviceOrg"
+BRMS_ACCESS_GROUP_LIST = "/obms/api/v1.1/acs/access-group/list"
+BRMS_ACCESS_GROUP_DETAIL = "/obms/api/v1.1/acs/access-group/{group_id}"
+BRMS_DOOR_GROUP_LIST = "/obms/api/v1.0/accessControl/doorGroupList"
 PERSON_GROUPS_CACHE_TTL_SECONDS = 1800.0
 DEVICE_ORG_CACHE_TTL_SECONDS = 1800.0
+VISITED_NAME_CHANNEL_CACHE_TTL_SECONDS = 3600.0
+ACCESS_RULE_CHANNEL_CACHE_TTL_SECONDS = 3600.0
+VISITOR_PAGE_LOOKBACK_DAYS = 730
 ACS_CHANNEL_TYPE = "7"
 SYNC_TARGET_PERSON = "person"
 SYNC_TARGET_VISITOR = "visitor"
@@ -51,6 +61,32 @@ SYNC_TARGET_VISITOR = "visitor"
 
 def _normalize_org_lookup_key(name: str) -> str:
     return name.strip().casefold()
+
+
+def _normalize_visited_name_key(name: str) -> str:
+    text = name.strip()
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKD", text)
+    without_accents = "".join(
+        char for char in normalized if not unicodedata.combining(char)
+    )
+    collapsed = " ".join(without_accents.split())
+    return collapsed.casefold()
+
+
+def _visited_names_fuzzy_match(search_key: str, candidate_key: str) -> bool:
+    """True when host names differ only by typo/acento leve (ex.: recpcao vs recepcao)."""
+    if not search_key or not candidate_key or search_key == candidate_key:
+        return search_key == candidate_key
+    search_tokens = search_key.split()
+    candidate_tokens = candidate_key.split()
+    if not search_tokens or not candidate_tokens:
+        return False
+    if search_tokens[-1] != candidate_tokens[-1]:
+        return False
+    ratio = difflib.SequenceMatcher(None, search_key, candidate_key).ratio()
+    return ratio >= 0.85
 
 
 def parse_visitor_channel_map(raw: str) -> dict[str, list[str]]:
@@ -259,8 +295,6 @@ class DefenseIASettings:
     timeout_seconds: float = 10.0
     visited_person_id: str = ""
     sync_target: Literal["person", "visitor"] = SYNC_TARGET_VISITOR
-    visitor_channel_map: dict[str, list[str]] = field(default_factory=dict)
-    visitor_channel_default: list[str] = field(default_factory=list)
     visitor_status: str = "1"
     visited_name: str = ""
     visited_org_name: str = ""
@@ -314,6 +348,10 @@ class DefenseIAClient:
         self._device_org_departments: list[dict[str, Any]] | None = None
         self._device_org_cache_at: float = 0.0
         self._device_org_lock = asyncio.Lock()
+        self._visited_channel_cache: dict[str, tuple[list[str], float]] = {}
+        self._visited_channel_lock = asyncio.Lock()
+        self._access_rule_channel_cache: dict[str, tuple[list[str], float]] = {}
+        self._access_rule_channel_lock = asyncio.Lock()
 
     @property
     def token(self) -> str | None:
@@ -646,22 +684,31 @@ class DefenseIAClient:
     async def sync_visitor(
         self,
         payload: SyncRequest,
-        org_code: str | None = None,
+        visited_name: str | None = None,
         *,
+        access_rule_name: str | None = None,
         entrance_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Cadastra visitante no Defense IA 3.x usando orgCode (como pessoa ACS)."""
+        """Cadastra visitante no Defense IA 3.x (regra de acesso → visitedName/portas)."""
         if self.settings.enabled and not self._token:
             raise DefenseIANotReadyError("Defense IA não conectado")
-        resolved_org = org_code or self.settings.org_code or "001"
+        rule = (access_rule_name or "").strip()
+        host = (visited_name or self.settings.visited_name or "").strip()
+        if not host and not rule:
+            raise DefenseIAArgumentError(
+                "Regra de acesso ausente — informe defense.org_code "
+                "com o nome da regra cadastrada no painel Defense"
+            )
+        post_visited_name = host or rule
         if entrance_ids is None:
-            entrance_ids = await self.resolve_visitor_channel_ids(resolved_org)
-        org_name = await self.resolve_org_name_by_code(resolved_org)
+            entrance_ids = await self.resolve_visitor_entrance_ids(
+                access_rule_name=rule or post_visited_name,
+                visited_name=host or post_visited_name,
+            )
         return await self._send_visitor_with_relogin(
             payload,
             entrance_ids,
-            org_code=resolved_org,
-            org_name=org_name,
+            visited_name=post_visited_name,
         )
 
     async def _send_visitor_with_relogin(
@@ -669,8 +716,7 @@ class DefenseIAClient:
         payload: SyncRequest,
         entrance_ids: list[str],
         *,
-        org_code: str | None = None,
-        org_name: str | None = None,
+        visited_name: str,
     ) -> dict[str, Any]:
         if not self._token:
             await self.login()
@@ -678,16 +724,14 @@ class DefenseIAClient:
         response = await self._upsert_visitor_request(
             payload,
             entrance_ids,
-            org_code=org_code,
-            org_name=org_name,
+            visited_name=visited_name,
         )
         if response.status_code == 401:
             await self.login()
             response = await self._upsert_visitor_request(
                 payload,
                 entrance_ids,
-                org_code=org_code,
-                org_name=org_name,
+                visited_name=visited_name,
             )
 
         self._raise_for_response(response)
@@ -700,16 +744,14 @@ class DefenseIAClient:
         payload: SyncRequest,
         entrance_ids: list[str],
         *,
-        org_code: str | None = None,
-        org_name: str | None = None,
+        visited_name: str,
     ) -> httpx.Response:
         # O Defense IA gera visitorId automaticamente; cada evento BioDoc = nova visita.
         headers = self._auth_headers()
         visitor_payload = self.build_visitor_payload(
             payload,
             entrance_ids=entrance_ids,
-            org_code=org_code,
-            org_name=org_name,
+            visited_name=visited_name,
         )
         logger.debug(
             "[DEFENSE_IA OUT] method=POST url=%s payload=%s",
@@ -779,8 +821,7 @@ class DefenseIAClient:
         payload: SyncRequest,
         *,
         entrance_ids: list[str],
-        org_code: str | None = None,
-        org_name: str | None = None,
+        visited_name: str,
         existing_face_pictures: list[str] | None = None,
     ) -> dict[str, Any]:
         face = self._resolve_face_base64(payload)
@@ -817,92 +858,455 @@ class DefenseIAClient:
                 "liftChannels": [],
             },
         }
-        resolved_org_name = org_name or self.settings.visited_org_name
-        if org_name:
-            body["visitorOrgName"] = org_name
-        if resolved_org_name:
-            body["visitedName"] = self.settings.visited_name or resolved_org_name
-            body["visitedOrgName"] = resolved_org_name
-        elif self.settings.visited_name:
-            body["visitedName"] = self.settings.visited_name
-        if org_code:
-            logger.debug(
-                "[DEFENSE_IA] visitante orgCode=%s orgName=%r acsChannelIds=%s",
-                org_code,
-                org_name,
-                acs_channel_ids,
-            )
+        body["visitedName"] = visited_name
+        logger.info(
+            "[DEFENSE_IA] visitante visitedName=%r acsChannelIds=%s",
+            visited_name,
+            acs_channel_ids,
+        )
         if self.settings.visited_person_id:
             body["visitedPersonId"] = self.settings.visited_person_id
         return body
 
-    async def resolve_visitor_channel_ids(self, org_code: str | None) -> list[str]:
-        """
-        Resolve acsChannelIds automaticamente a partir do orgCode (mesma chave da pessoa ACS).
+    @staticmethod
+    def _extract_acs_channel_ids_from_visitor_body(body: dict[str, Any]) -> list[str]:
+        node = body.get("data", body)
+        if not isinstance(node, dict):
+            node = body
+        right = node.get("rightInfo")
+        if not isinstance(right, dict):
+            return []
+        channels = right.get("acsChannelIds") or []
+        if not isinstance(channels, list):
+            return []
+        return [str(item).strip() for item in channels if str(item).strip()]
 
-        Ordem: override .env → árvore deviceOrg (por code/nome) → config global visitante → [].
-        Lista vazia usa permissão padrão do módulo Visitante (enableDefaultRight no servidor).
-        """
-        code = (org_code or self.settings.org_code or "001").strip()
+    @staticmethod
+    def _extract_visitor_page_items(body: dict[str, Any]) -> list[dict[str, Any]]:
+        data = body.get("data", body)
+        if not isinstance(data, dict):
+            return []
+        for key in ("pageData", "list", "records", "results"):
+            raw = data.get(key)
+            if isinstance(raw, list):
+                return [item for item in raw if isinstance(item, dict)]
+        return []
 
-        mapped = self.settings.visitor_channel_map.get(code)
-        if mapped:
-            logger.debug(
-                "[DEFENSE_IA] acsChannelIds para orgCode=%s (mapa .env): %s",
-                code,
-                mapped,
+    def _visitor_page_params(self, key: str) -> dict[str, str]:
+        from src.services.defense_visitor import visitor_page_query
+
+        return visitor_page_query(
+            key=key,
+            page=1,
+            page_size=100,
+            lookback_days=VISITOR_PAGE_LOOKBACK_DAYS,
+        )
+
+    async def _fetch_visitor_page(self, key: str) -> list[dict[str, Any]]:
+        if not self._token:
+            await self.login()
+        params = self._visitor_page_params(key)
+        response = await self._request(
+            "GET",
+            BRMS_VISITOR_PAGE,
+            params=params,
+            headers=self._auth_headers(),
+        )
+        if response.status_code == 401:
+            await self.login()
+            response = await self._request(
+                "GET",
+                BRMS_VISITOR_PAGE,
+                params=params,
+                headers=self._auth_headers(),
             )
-            return list(mapped)
+        if not response.is_success or not response.content:
+            return []
+        try:
+            body = response.json()
+        except ValueError:
+            return []
+        if not isinstance(body, dict):
+            return []
+        return self._extract_visitor_page_items(body)
 
-        if self.settings.visitor_channel_default:
-            logger.debug(
-                "[DEFENSE_IA] acsChannelIds fallback .env para orgCode=%s: %s",
-                code,
-                self.settings.visitor_channel_default,
-            )
-            return list(self.settings.visitor_channel_default)
+    @staticmethod
+    def _extract_acs_channel_ids_from_page_item(item: dict[str, Any]) -> list[str]:
+        right = item.get("rightInfo")
+        if not isinstance(right, dict):
+            return []
+        channels = right.get("acsChannelIds") or []
+        if not isinstance(channels, list):
+            return []
+        return [str(item_id).strip() for item_id in channels if str(item_id).strip()]
 
-        departments = await self.list_device_org_departments()
-        by_code = _find_device_org_channels(departments, org_code=code)
-        if by_code:
-            logger.info(
-                "[DEFENSE_IA] acsChannelIds via deviceOrg orgCode=%s: %s",
-                code,
-                by_code,
-            )
-            return by_code
+    async def resolve_visitor_entrance_ids(
+        self,
+        *,
+        access_rule_name: str,
+        visited_name: str,
+    ) -> list[str]:
+        """Regra (6.2.8) → deviceOrg (6.2.4) → cópia por host (6.2.10)."""
+        rule = (access_rule_name or "").strip()
+        host = (visited_name or "").strip()
 
-        org_name = await self.resolve_org_name_by_code(code)
-        if org_name:
-            by_name = _find_device_org_channels(
-                departments,
-                org_name_key=_normalize_org_lookup_key(org_name),
-            )
-            if by_name:
-                logger.info(
-                    "[DEFENSE_IA] acsChannelIds via deviceOrg orgName=%r: %s",
-                    org_name,
-                    by_name,
-                )
-                return by_name
+        if rule:
+            channels = await self.resolve_channels_by_access_group_name(rule)
+            if channels:
+                return channels
 
-        config = await self._fetch_visitor_config()
-        channels = config.get("acsChannelIds") or []
-        if isinstance(channels, list) and channels:
-            resolved = [str(item).strip() for item in channels if str(item).strip()]
-            if resolved:
-                logger.info(
-                    "[DEFENSE_IA] acsChannelIds via /config/visitor (global): %s",
-                    resolved,
-                )
-                return resolved
+        for lookup in (rule, host):
+            if not lookup:
+                continue
+            channels = await self.resolve_channels_by_device_org_name(lookup)
+            if channels:
+                return channels
 
-        logger.info(
-            "[DEFENSE_IA] orgCode=%s sem canais explícitos — "
-            "enviando acsChannelIds=[] (Defense aplica direito padrão do visitante)",
-            code,
+        lookup_host = host or rule
+        if lookup_host:
+            channels = await self.resolve_channels_by_visited_name(lookup_host)
+            if channels:
+                return channels
+
+        logger.warning(
+            "[DEFENSE_IA] sem portas para regra=%r host=%r — acsChannelIds=[] "
+            "(direito padrão global)",
+            rule or None,
+            host or None,
         )
         return []
+
+    async def resolve_channels_by_device_org_name(self, org_name: str) -> list[str]:
+        """Portas vinculadas ao departamento na árvore deviceOrg (6.2.4).
+
+        No deploy Unimed a API access-group (6.2.8) retorna 404; regras como
+        ``Refeitorio`` aparecem em ``deviceOrg`` com ``channel[].id``.
+        """
+        raw = (org_name or "").strip()
+        if not raw:
+            return []
+
+        departments = await self.list_device_org_departments()
+        if not departments:
+            return []
+
+        if raw.isdigit():
+            channels = _find_device_org_channels(departments, org_code=raw)
+        else:
+            name_key = _normalize_visited_name_key(raw)
+            channels = _find_device_org_channels(departments, org_name_key=name_key)
+
+        if channels:
+            logger.info(
+                "[DEFENSE_IA] acsChannelIds via deviceOrg %r: %s",
+                raw,
+                channels,
+            )
+        return channels
+
+    async def resolve_channels_by_access_group_name(
+        self, access_group_name: str
+    ) -> list[str]:
+        """Expande regra de acesso (accessGroupName) em acsChannelIds quando a API ACS responde."""
+        raw = (access_group_name or "").strip()
+        if not raw:
+            return []
+
+        normalized_key = _normalize_visited_name_key(raw)
+        now = time.time()
+        cached = self._access_rule_channel_cache.get(normalized_key)
+        if cached and (now - cached[1]) < ACCESS_RULE_CHANNEL_CACHE_TTL_SECONDS:
+            return list(cached[0])
+
+        async with self._access_rule_channel_lock:
+            now = time.time()
+            cached = self._access_rule_channel_cache.get(normalized_key)
+            if cached and (now - cached[1]) < ACCESS_RULE_CHANNEL_CACHE_TTL_SECONDS:
+                return list(cached[0])
+
+            resolved = await self._fetch_channels_for_access_group_name(raw)
+            if resolved:
+                logger.info(
+                    "[DEFENSE_IA] acsChannelIds via regra de acesso %r: %s",
+                    raw,
+                    resolved,
+                )
+            else:
+                logger.debug(
+                    "[DEFENSE_IA] regra de acesso %r sem canais via API "
+                    "(404 ou nome não encontrado)",
+                    raw,
+                )
+
+            self._access_rule_channel_cache[normalized_key] = (resolved, time.time())
+            return list(resolved)
+
+    async def _fetch_channels_for_access_group_name(
+        self, access_group_name: str
+    ) -> list[str]:
+        if not self._token:
+            await self.login()
+
+        response = await self._request(
+            "GET",
+            BRMS_ACCESS_GROUP_LIST,
+            headers=self._auth_headers(),
+        )
+        if response.status_code == 401:
+            await self.login()
+            response = await self._request(
+                "GET",
+                BRMS_ACCESS_GROUP_LIST,
+                headers=self._auth_headers(),
+            )
+        if response.status_code == 404:
+            return []
+        if not response.is_success or not response.content:
+            return []
+
+        try:
+            body = response.json()
+        except ValueError:
+            return []
+        if not isinstance(body, dict):
+            return []
+
+        target_key = _normalize_visited_name_key(access_group_name)
+        group_id: str | None = None
+        for entry in self._extract_access_group_list_items(body):
+            name = str(
+                entry.get("accessGroupName")
+                or entry.get("groupName")
+                or entry.get("name")
+                or ""
+            )
+            if _normalize_visited_name_key(name) != target_key:
+                continue
+            gid = entry.get("id") or entry.get("accessGroupId") or entry.get("groupId")
+            if gid is not None:
+                group_id = str(gid).strip()
+                break
+
+        if not group_id:
+            return []
+
+        detail = await self._fetch_access_group_detail(group_id)
+        if not detail:
+            return []
+
+        door_group_ids = detail.get("doorGroupIds") or []
+        if not isinstance(door_group_ids, list):
+            return []
+        ids = [str(item).strip() for item in door_group_ids if str(item).strip()]
+        if not ids:
+            return []
+
+        return await self._expand_door_groups_to_acs_channel_ids(ids)
+
+    @staticmethod
+    def _extract_access_group_list_items(body: dict[str, Any]) -> list[dict[str, Any]]:
+        data = body.get("data", body)
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if not isinstance(data, dict):
+            return []
+        for key in ("list", "pageData", "records", "results", "data"):
+            raw = data.get(key)
+            if isinstance(raw, list):
+                return [item for item in raw if isinstance(item, dict)]
+        return []
+
+    async def _fetch_access_group_detail(self, group_id: str) -> dict[str, Any] | None:
+        path = BRMS_ACCESS_GROUP_DETAIL.format(group_id=group_id)
+        response = await self._request("GET", path, headers=self._auth_headers())
+        if response.status_code in (401,):
+            await self.login()
+            response = await self._request("GET", path, headers=self._auth_headers())
+        if response.status_code == 404 or not response.is_success or not response.content:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        data = body.get("data", body)
+        return data if isinstance(data, dict) else None
+
+    async def _expand_door_groups_to_acs_channel_ids(
+        self, door_group_ids: list[str]
+    ) -> list[str]:
+        if not door_group_ids:
+            return []
+
+        response = await self._request(
+            "GET",
+            BRMS_DOOR_GROUP_LIST,
+            params={"doorGroupIds": ",".join(door_group_ids)},
+            headers=self._auth_headers(),
+        )
+        if response.status_code == 401:
+            await self.login()
+            response = await self._request(
+                "GET",
+                BRMS_DOOR_GROUP_LIST,
+                params={"doorGroupIds": ",".join(door_group_ids)},
+                headers=self._auth_headers(),
+            )
+        if response.status_code == 404 or not response.is_success or not response.content:
+            return []
+
+        try:
+            body = response.json()
+        except ValueError:
+            return []
+
+        channels: list[str] = []
+        data = body.get("data", body)
+        groups: list[object] = []
+        if isinstance(data, list):
+            groups = data
+        elif isinstance(data, dict):
+            for key in ("list", "pageData", "doorGroups", "records", "results"):
+                raw = data.get(key)
+                if isinstance(raw, list):
+                    groups = raw
+                    break
+
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            raw_channels = group.get("channelIds") or group.get("channels") or []
+            if not isinstance(raw_channels, list):
+                continue
+            for channel_id in raw_channels:
+                text = str(channel_id).strip()
+                if not text:
+                    continue
+                if "$" in text:
+                    channels.append(text)
+                else:
+                    channels.append(f"{text}${ACS_CHANNEL_TYPE}$0$0")
+
+        seen: set[str] = set()
+        unique: list[str] = []
+        for channel in channels:
+            if channel not in seen:
+                seen.add(channel)
+                unique.append(channel)
+        return unique
+
+    async def resolve_channels_by_visited_name(self, visited_name: str) -> list[str]:
+        """Copia acsChannelIds de visitantes existentes com o mesmo host (API 6.2.10)."""
+        raw = (visited_name or "").strip()
+        if not raw:
+            logger.warning("[DEFENSE_IA] visited_name vazio — acsChannelIds=[]")
+            return []
+
+        normalized_key = _normalize_visited_name_key(raw)
+        now = time.time()
+        cached = self._visited_channel_cache.get(normalized_key)
+        if cached and (now - cached[1]) < VISITED_NAME_CHANNEL_CACHE_TTL_SECONDS:
+            return list(cached[0])
+
+        async with self._visited_channel_lock:
+            now = time.time()
+            cached = self._visited_channel_cache.get(normalized_key)
+            if cached and (now - cached[1]) < VISITED_NAME_CHANNEL_CACHE_TTL_SECONDS:
+                return list(cached[0])
+
+            page_items = await self._fetch_visitor_page(raw)
+            channel_sets: list[tuple[str, ...]] = []
+
+            for item in page_items:
+                page_visited = str(item.get("visitedName") or "")
+                page_key = _normalize_visited_name_key(page_visited)
+                if page_key != normalized_key:
+                    continue
+                channels = await self._channels_for_visitor_page_item(item)
+                if channels:
+                    channel_sets.append(tuple(channels))
+
+            if not channel_sets:
+                for item in page_items:
+                    page_visited = str(item.get("visitedName") or "")
+                    page_key = _normalize_visited_name_key(page_visited)
+                    if not _visited_names_fuzzy_match(normalized_key, page_key):
+                        continue
+                    channels = await self._channels_for_visitor_page_item(item)
+                    if channels:
+                        channel_sets.append(tuple(channels))
+                if channel_sets:
+                    logger.warning(
+                        "[DEFENSE_IA] host %r sem match exato — usando visitante "
+                        "similar no Defense (typo/variante de nome)",
+                        raw,
+                    )
+
+            if not channel_sets:
+                tokens = normalized_key.split()
+                if len(tokens) >= 2:
+                    broader_items = await self._fetch_visitor_page(tokens[-1])
+                    for item in broader_items:
+                        page_key = _normalize_visited_name_key(
+                            str(item.get("visitedName") or "")
+                        )
+                        if page_key == normalized_key:
+                            continue
+                        if not _visited_names_fuzzy_match(normalized_key, page_key):
+                            continue
+                        channels = await self._channels_for_visitor_page_item(item)
+                        if channels:
+                            channel_sets.append(tuple(channels))
+                    if channel_sets:
+                        logger.warning(
+                            "[DEFENSE_IA] host %r sem referência exata — portas copiadas "
+                            "de visitante similar (busca ampla por %r)",
+                            raw,
+                            tokens[-1],
+                        )
+
+            if not channel_sets:
+                logger.warning(
+                    "[DEFENSE_IA] host visitante %r sem referência no Defense — "
+                    "acsChannelIds=[] (direito padrão global)",
+                    raw,
+                )
+                resolved: list[str] = []
+            else:
+                counts = Counter(channel_sets)
+                best_count = counts.most_common(1)[0][1]
+                top_sets = [channels for channels, count in counts.items() if count == best_count]
+                if len(top_sets) > 1:
+                    logger.warning(
+                        "[DEFENSE_IA] host %r com empate entre %d conjuntos de portas — "
+                        "usando o primeiro",
+                        raw,
+                        len(top_sets),
+                    )
+                resolved = list(top_sets[0])
+                logger.info(
+                    "[DEFENSE_IA] acsChannelIds via visitante host=%r: %s",
+                    raw,
+                    resolved,
+                )
+
+            self._visited_channel_cache[normalized_key] = (resolved, time.time())
+            return list(resolved)
+
+    async def _channels_for_visitor_page_item(
+        self, item: dict[str, Any]
+    ) -> list[str]:
+        channels = self._extract_acs_channel_ids_from_page_item(item)
+        if channels:
+            return channels
+        visitor_id = item.get("id") or item.get("visitorId")
+        if not visitor_id:
+            return []
+        detail = await self._fetch_brms_visitor(str(visitor_id))
+        if not detail:
+            return []
+        return self._extract_acs_channel_ids_from_visitor_body(detail)
 
     async def _fetch_visitor_config(self) -> dict[str, Any]:
         if not self._token:

@@ -42,7 +42,10 @@ async def test_sync_to_defense_visitor_mode():
     assert result["visitor_id"] == "9"
     assert result["person_id"] == "8"
     client.sync_visitor.assert_awaited_once_with(
-        _sync_request(), "001021", entrance_ids=None
+        _sync_request(),
+        "001021",
+        access_rule_name="001021",
+        entrance_ids=None,
     )
 
 
@@ -69,5 +72,8 @@ async def test_sync_to_defense_visitor_explicit_channels():
     )
 
     client.sync_visitor.assert_awaited_once_with(
-        _sync_request(), "001021", entrance_ids=channels
+        _sync_request(),
+        "001021",
+        access_rule_name="001021",
+        entrance_ids=channels,
     )

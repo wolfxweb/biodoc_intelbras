@@ -1,63 +1,41 @@
-# Cadastro de visitante — automático via orgCode
+# Cadastro de visitante — regra de acesso
 
 O middleware registra **sempre visitante** no Intelbras Defense.
 
-Resolução de `orgCode` documentada em [`BIODOC_ORGCODE_SETUP.md`](BIODOC_ORGCODE_SETUP.md).
-
-**Não é necessário** configurar `DEFENSE_IA_VISITOR_CHANNEL_MAP` nem
-`DEFENSE_IA_VISITED_PERSON_ID` no `.env` para operação normal.
+**Não envie** códigos de catraca (`1000045$7$0$0`) no JSON — o middleware monta `rightInfo.acsChannelIds`.
 
 ---
 
-## Como funciona
+## POST `/v1/person/sync`
 
-### Webhook BioDoc (`GET /webhook/biodoc`)
-
-1. BioDoc envia `local_token` (ex.: `CHU - ESPAÇO VIVER BEM`)
-2. Middleware resolve → `orgCode` (ex.: `001021`) via `person-group/list`
-3. `sync_visitor(org_code)` monta o payload e resolve portas automaticamente
-
-### POST `/v1/person/sync` (cadastro direto)
-
-Informe no JSON:
+Informe em **`defense.org_code`** o **nome da regra de acesso** cadastrada no painel Defense (Autorização → Regra de acesso):
 
 ```json
 "defense": {
-  "org_code": "001021"
+  "org_code": "CHU - CENTRAL"
 }
 ```
 
-Portas de acesso são resolvidas automaticamente (mesma lógica do webhook).
+Exemplos de nomes válidos: `CHU - CENTRAL`, `Refeitorio`, `BLOCO A` — **igual ao painel**.
+
+---
+
+## Webhook BioDoc (`GET /webhook/biodoc`)
+
+Fluxo automático via `local_token` / `reguiredName` do BioDoc. Ver [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
 ## Resolução de portas (`acsChannelIds`)
 
-Ordem automática:
-
-1. Override opcional no `.env` (`DEFENSE_IA_VISITOR_CHANNEL_MAP`)
-2. Árvore `GET /brms/api/v1.0/tree/deviceOrg?channelTypes=7` (por `orgCode` ou nome)
-3. Config global `GET /brms/api/v1.1/config/visitor`
-4. Fallback: permissão padrão do visitante (`enableDefaultRight`)
-
----
-
-## Variáveis opcionais (.env)
-
-| Variável | Quando usar |
-|----------|-------------|
-| `DEFENSE_IA_VISITOR_CHANNEL_MAP` | Override manual por orgCode (exceção) |
-| `DEFENSE_IA_VISITOR_CHANNEL_DEFAULT` | Override CSV global (exceção) |
-| `DEFENSE_IA_VISITED_PERSON_ID` | Só se o painel exigir anfitrião explícito |
-| `DEFENSE_IA_VISITOR_STATUS` | `1` = em visita (padrão) |
+Automática a partir da regra de acesso (API ACS 6.2.8). Detalhes técnicos nos logs do middleware.
 
 ---
 
 ## Testes
 
 ```bash
-python scripts/list_person_orgs.py
 python scripts/list_visitor_config.py
-python scripts/test_defense_sync_visitor.py --org-code 001021
+python scripts/test_defense_sync_visitor.py --org-code "CHU - CENTRAL"
 python scripts/test_sync_via_api.py
 ```

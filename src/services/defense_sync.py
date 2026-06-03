@@ -32,6 +32,8 @@ async def sync_to_defense(
     *,
     sync_target: Literal["visitor", "person"] = "visitor",
     org_code: str | None = None,
+    access_rule_name: str | None = None,
+    visited_name: str | None = None,
     acs_channel_ids: list[str] | None = None,
     log_context: str = "",
 ) -> dict[str, Any]:
@@ -49,20 +51,30 @@ async def sync_to_defense(
             detail="Defense IA não conectado",
         )
 
+    rule = (access_rule_name or org_code or "").strip()
+    host = (visited_name or org_code or "").strip()
+    if not host:
+        host = (defense_client.settings.visited_name or "").strip()
+    if not rule and not host:
+        rule = host
     resolved_org = org_code or defense_client.settings.org_code or "001"
+    post_visited_name = host or rule
 
     try:
         if sync_target == "visitor":
             logger.info(
-                "%ssync visitor external_id=%s orgCode=%s acs_channel_ids=%s",
+                "%ssync visitor external_id=%s access_rule=%s visited_name=%s "
+                "acs_channel_ids=%s",
                 prefix,
                 sync_request.external_id,
-                resolved_org,
+                rule or "(n/a)",
+                post_visited_name,
                 acs_channel_ids if acs_channel_ids is not None else "(auto)",
             )
             defense_result = await defense_client.sync_visitor(
                 sync_request,
-                resolved_org,
+                host or None,
+                access_rule_name=rule or None,
                 entrance_ids=acs_channel_ids,
             )
         else:
@@ -75,7 +87,7 @@ async def sync_to_defense(
             defense_result = await defense_client.sync_person(sync_request, resolved_org)
     except DefenseIAArgumentError as exc:
         detail = str(exc)
-        if "acsChannelId" in detail:
+        if "Host visitante" in detail or "acsChannelId" in detail:
             logger.warning(
                 "%sconfiguração visitante inválida external_id=%s: %s",
                 prefix,
@@ -116,6 +128,7 @@ async def sync_to_defense(
     ids = extract_sync_result_ids(defense_result)
     return {
         **ids,
-        "org_code": resolved_org,
+        "visited_name": post_visited_name,
+        "org_code": rule or post_visited_name,
         "defense_result": defense_result,
     }

@@ -266,65 +266,50 @@ def _unique_group_candidates(*values: str | None) -> list[str]:
     return candidates
 
 
-async def _resolve_group_org_code(
+async def _resolve_visitor_host(
     *,
     ref_label: str,
     defense_client: DefenseIAClient,
     local_token: str | None = None,
     required_name: str | None = None,
 ) -> tuple[str, list[str], str | None]:
-    """Resolve orgCode tentando local_token → requiredName → default."""
+    """Host visitante: local_token → requiredName → DEFENSE_IA_VISITED_NAME."""
     candidates = _unique_group_candidates(local_token, required_name)
-    resolved_org_code: str | None = None
     matched_source: str | None = None
+    resolved_host = ""
 
-    for candidate in candidates:
-        try:
-            code = await defense_client.resolve_org_code(candidate)
-        except DefenseIAError as exc:
-            logger.warning(
-                "[WEBHOOK] ref=%s falha ao resolver orgCode para %r: %s",
-                ref_label,
-                candidate,
-                exc,
-            )
-            continue
-        if code:
-            resolved_org_code = code
-            matched_source = candidate
-            break
-
-    if resolved_org_code and matched_source:
+    if candidates:
+        resolved_host = candidates[0]
+        matched_source = candidates[0]
         logger.info(
             format_flow_step(
-                "orgCode resolvido",
+                "host visitante resolvido",
                 ref=ref_label,
                 candidatos=candidates,
-                orgCode=resolved_org_code,
+                visitedName=resolved_host,
                 fonte=matched_source,
             )
         )
-    elif candidates:
-        resolved_org_code = defense_client.settings.org_code or "001"
-        logger.warning(
-            format_flow_step(
-                "orgCode fallback (grupo não encontrado no Defense)",
-                ref=ref_label,
-                candidatos=candidates,
-                orgCode=resolved_org_code,
-            )
-        )
     else:
-        resolved_org_code = defense_client.settings.org_code or "001"
-        logger.warning(
-            format_flow_step(
-                "orgCode fallback (sem local_token/requiredName)",
-                ref=ref_label,
-                orgCode=resolved_org_code,
+        resolved_host = (defense_client.settings.visited_name or "").strip()
+        if resolved_host:
+            matched_source = "DEFENSE_IA_VISITED_NAME"
+            logger.warning(
+                format_flow_step(
+                    "host visitante fallback (.env DEFENSE_IA_VISITED_NAME)",
+                    ref=ref_label,
+                    visitedName=resolved_host,
+                )
             )
-        )
+        else:
+            logger.warning(
+                format_flow_step(
+                    "host visitante ausente (sem local_token/requiredName)",
+                    ref=ref_label,
+                )
+            )
 
-    return resolved_org_code, candidates, matched_source
+    return resolved_host, candidates, matched_source
 
 
 async def _sync_to_defense(
@@ -351,7 +336,7 @@ async def _sync_to_defense(
             detail="Defense IA não conectado",
         )
 
-    resolved_org_code, _, _ = await _resolve_group_org_code(
+    resolved_host, _, _ = await _resolve_visitor_host(
         ref_label=ref_label,
         defense_client=defense_client,
         local_token=local_token,
@@ -362,7 +347,7 @@ async def _sync_to_defense(
         sync_request,
         defense_client,
         sync_target="visitor",
-        org_code=resolved_org_code,
+        org_code=resolved_host,
         log_context=f"[WEBHOOK] ref={ref_label}",
     )
 
@@ -372,7 +357,7 @@ async def _sync_to_defense(
             ref=ref_label,
             id_Card=card,
             name=name,
-            orgCode=resolved_org_code,
+            visitedName=resolved_host,
             visitorId=sync_result.get("visitor_id"),
             personId=sync_result.get("person_id"),
         )
@@ -381,7 +366,8 @@ async def _sync_to_defense(
         "status": "success",
         "external_id": card,
         "defense_sync": "ok",
-        "orgCode": resolved_org_code,
+        "visitedName": resolved_host,
+        "orgCode": resolved_host,
         "name": name,
     }
     if sync_result.get("visitor_id"):

@@ -35,11 +35,8 @@ router = APIRouter(
         "| `person.document` | Sim | CPF ou outro documento. |\n"
         "| `biometrics` | Sim | Foto facial obrigatória. |\n"
         "| `biometrics.face_image_base64` | Sim | JPEG/PNG em base64 (mín. 1 KB). |\n"
-        "| `defense.org_code` | Sim | **Sub-organização** no Defense (local/unidade), "
-        "ex.: `001021`. **Não** é porta/catacra — portas de acesso são automáticas. "
-        "Liste locais: `scripts/list_person_orgs.py`. |\n\n"
-        "**Portas de acesso:** não informe no JSON. O middleware associa as catracas "
-        "ao `org_code` (ou usa a permissão padrão do módulo Visitante no painel).\n\n"
+        "| `defense.org_code` | Sim | Nome da **regra de acesso** no painel Defense "
+        "(ex.: `CHU - CENTRAL`). |\n\n"
         "**Quando usar:** integração direta (ERP, script, homologação), reenvio ou "
         "correção manual."
     ),
@@ -66,7 +63,8 @@ async def sync_person(
         payload,
         defense_client,
         sync_target="visitor",
-        org_code=payload.defense.org_code,
+        access_rule_name=payload.defense.resolved_access_rule_name(),
+        visited_name=payload.defense.resolved_host_name(),
         log_context=f"source={payload.source} external_id={payload.external_id}",
     )
 

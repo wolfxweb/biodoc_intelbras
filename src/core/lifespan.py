@@ -9,8 +9,6 @@ from src.services.biodoc_client import BiodocClient
 from src.services.defense_ia_client import (
     DefenseIAClient,
     DefenseIASettings,
-    parse_visitor_channel_default,
-    parse_visitor_channel_map,
     SYNC_TARGET_PERSON,
     SYNC_TARGET_VISITOR,
 )
@@ -21,17 +19,6 @@ def _load_sync_target() -> str:
     if raw in (SYNC_TARGET_PERSON, SYNC_TARGET_VISITOR):
         return raw
     return SYNC_TARGET_VISITOR
-
-
-def _load_visitor_channel_map() -> dict[str, list[str]]:
-    raw = os.getenv("DEFENSE_IA_VISITOR_CHANNEL_MAP", "")
-    if not raw.strip():
-        return {}
-    try:
-        return parse_visitor_channel_map(raw)
-    except ValueError as exc:
-        logger.warning("DEFENSE_IA_VISITOR_CHANNEL_MAP ignorado: %s", exc)
-        return {}
 
 
 def build_defense_client_from_env() -> DefenseIAClient:
@@ -56,10 +43,6 @@ def build_defense_client_from_env() -> DefenseIAClient:
         timeout_seconds=float(os.getenv("DEFENSE_IA_TIMEOUT_SECONDS", "10")),
         visited_person_id=os.getenv("DEFENSE_IA_VISITED_PERSON_ID", ""),
         sync_target=_load_sync_target(),  # type: ignore[arg-type]
-        visitor_channel_map=_load_visitor_channel_map(),
-        visitor_channel_default=parse_visitor_channel_default(
-            os.getenv("DEFENSE_IA_VISITOR_CHANNEL_DEFAULT", "")
-        ),
         visitor_status=os.getenv("DEFENSE_IA_VISITOR_STATUS", "1"),
         visited_name=os.getenv("DEFENSE_IA_VISITED_NAME", ""),
         visited_org_name=os.getenv("DEFENSE_IA_VISITED_ORG_NAME", ""),
