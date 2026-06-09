@@ -49,14 +49,14 @@ BioDoc Verify ──GET /webhook/biodoc?card=...──▶ Middleware
 Middleware:
   1. Valida response=success (query params)
   2. GET BioDoc /card/integration/mainimage?idCard=...
-  3. GET BioDoc /logs/external-audits → local_token
-  4. GET BioDoc /integrations/log/{audit_id} → foto da verify
-  5. Download imagem → base64
-  6. `local_token` / `reguiredName` → **host visitante** (texto, ex. `"recepção central"`)
-  7. Middleware copia `acsChannelIds` via API 6.2.10 (visitantes existentes com mesmo host)
-  8. Defense IA visitante via `DefenseIAClient.sync_visitor()`
-     `visitedName` = host, `external_id` = id_Card (remark), face = base64
-  9. Página HTML de sucesso Unimed
+  3. Se reference_Id na query: GET /integrations/log/{reference_Id}
+     Senão: GET /logs/external-audits → GET /integrations/log/{audit_id}
+  4. Download imagem → base64
+  5. local_name: details URL → reguiredName → detail.nmLocal → required_Name
+  6. Middleware copia `acsChannelIds` via API 6.2.10 (visitantes existentes com mesmo host)
+  7. Defense IA visitante via `DefenseIAClient.sync_visitor()`
+     `visitedName` = local_name, `external_id` = id_Card (remark), face = base64
+  8. Página HTML de sucesso Unimed
 ```
 
 Ver [`VISITOR_CHANNEL_SETUP.md`](VISITOR_CHANNEL_SETUP.md) para resolução de portas.

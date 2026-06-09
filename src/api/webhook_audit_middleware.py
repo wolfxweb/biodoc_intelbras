@@ -11,6 +11,7 @@ from starlette.responses import Response
 
 from src.core.logging import logger
 from src.core.webhook_log import format_inbound_request, format_inbound_response
+from src.core.webhook_query import parse_biodoc_redirect_query
 
 _MAX_BODY_LOG_BYTES = 64_000
 _REDACTED_HEADERS = frozenset(
@@ -27,8 +28,16 @@ _LOG_TAG = "[WEBHOOK IN]"
 def _redact_query_string(query: str) -> str:
     if not query:
         return ""
-    normalized = query.lstrip("?").replace("?", "&")
-    return _SENSITIVE_QUERY.sub(r"\1\2=***REDACTED***", normalized)
+    normalized = parse_biodoc_redirect_query(query)
+    if not normalized:
+        return ""
+    parts = []
+    for key, value in normalized.items():
+        if _SENSITIVE_QUERY.search(f"{key}={value}"):
+            parts.append(f"{key}=***REDACTED***")
+        else:
+            parts.append(f"{key}={value}")
+    return "&".join(parts)
 
 
 def _format_body_preview(raw: bytes) -> str:

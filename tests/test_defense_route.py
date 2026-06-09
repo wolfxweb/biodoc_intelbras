@@ -22,7 +22,7 @@ _DUMMY_JPEG = b"\xff\xd8\xff" + b"\x00" * 2048
 MOCK_USER_NAME = "CARLOS EDUARDO LOBO"
 
 
-def _make_defense_mock(resolved_host: str = "CHU - ESPAÇO VIVER BEM") -> AsyncMock:
+def _make_defense_mock(resolved_host: str = "VIVER") -> AsyncMock:
     client = AsyncMock()
     client.sync_visitor.return_value = {
         "code": 1000,
@@ -97,9 +97,10 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
         status=7,
         main_image="https://example.com/verify-capture.jpg",
         path=None,
-        required_name=None,
+        required_name="CHU - ESPAÇO VIVER BEM",
         operador="VIVER",
-        local_token="CHU - ESPAÇO VIVER BEM",
+        local_name="CHU - ESPAÇO VIVER BEM",
+        local_source="reguiredName",
     )
     app.dependency_overrides[get_defense_client] = lambda: defense_mock
     app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
@@ -115,7 +116,7 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
                     "/webhook/biodoc",
                     params={
                         "card": "00271368992672000",
-                        "date": "31/05/2026 15:50:32",
+                        "date": "30/05/2026 16:48:14",
                         "response": "200",
                         "message": "Face Reconhecida",
                     },
@@ -129,12 +130,12 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
     assert "Validação realizada com sucesso" in body
     assert "Unimed Joinville" in body
     assert MOCK_USER_NAME in body
-    assert "CHU - ESPAÇO VIVER BEM" in body
+    assert "VIVER" in body
     assert "Seu cadastro foi adicionado no Defense" in body
 
     messages = [r.message for r in caplog.records]
     assert any("external-audits escolheu log" in m for m in messages)
-    assert any("local_token resolvido" in m for m in messages)
+    assert any("operador resolvido" in m for m in messages)
     assert any("imagem resolvida" in m for m in messages)
     assert any("integrations/log" in m for m in messages)
     assert any("verify-capture.jpg" in m for m in messages)
@@ -143,7 +144,244 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
     defense_mock.sync_visitor.assert_awaited_once()
     call_args = defense_mock.sync_visitor.await_args
     assert call_args is not None
-    assert call_args[0][1] == "CHU - ESPAÇO VIVER BEM"
+    assert call_args[0][1] == "VIVER"
+
+
+@pytest.mark.asyncio
+async def test_defense_get_uses_details_operador_from_query(
+    caplog: pytest.LogCaptureFixture,
+):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="biodoc_intelbras")
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="00271368992672000",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = ASGITransport(app=app)
+    try:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get(
+                    "/webhook/biodoc",
+                    params={
+                        "card": "00271368992672000",
+                        "date": "09/06/2026 14:25:41",
+                        "response": "200",
+                        "details": '{"operador":"VIVER"}',
+                    },
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert "VIVER" in response.text
+    defense_mock.sync_visitor.assert_awaited_once()
+    call_args = defense_mock.sync_visitor.await_args
+    assert call_args is not None
+    assert call_args[0][1] == "VIVER"
+    messages = [r.message for r in caplog.records]
+    assert any("operador resolvido" in m for m in messages)
+    assert any("url.org_code" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_defense_get_malformed_biodoc_query_still_reads_card(
+    caplog: pytest.LogCaptureFixture,
+):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="biodoc_intelbras")
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="00271368992672000",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = ASGITransport(app=app)
+    try:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get(
+                    "/webhook/biodoc?org_code=VIVER?card=00271368992672000&response=200"
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    biodoc_mock.get_external_audits.assert_not_called()
+    defense_mock.sync_visitor.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_defense_get_org_code_in_url_skips_external_audits(
+    caplog: pytest.LogCaptureFixture,
+):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="biodoc_intelbras")
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="00271368992672000",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = ASGITransport(app=app)
+    try:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get(
+                    "/webhook/biodoc",
+                    params={
+                        "card": "00271368992672000",
+                        "date": "09/06/2026 15:15:49",
+                        "response": "200",
+                        "org_code": "VIVER",
+                    },
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    biodoc_mock.get_external_audits.assert_not_called()
+    defense_mock.sync_visitor.assert_awaited_once()
+    call_args = defense_mock.sync_visitor.await_args
+    assert call_args is not None
+    assert call_args[0][1] == "VIVER"
+
+
+@pytest.mark.asyncio
+async def test_defense_get_operador_in_url_skips_external_audits(
+    caplog: pytest.LogCaptureFixture,
+):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="biodoc_intelbras")
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="00271368992672000",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = ASGITransport(app=app)
+    try:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get(
+                    "/webhook/biodoc",
+                    params={
+                        "card": "00271368992672000",
+                        "date": "09/06/2026 15:15:49",
+                        "response": "200",
+                        "operador": "VIVER",
+                    },
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    biodoc_mock.get_external_audits.assert_not_called()
+    messages = [r.message for r in caplog.records]
+    assert any("external-audits ignorado" in m for m in messages)
+    defense_mock.sync_visitor.assert_awaited_once()
+    call_args = defense_mock.sync_visitor.await_args
+    assert call_args is not None
+    assert call_args[0][1] == "VIVER"
+
+
+@pytest.mark.asyncio
+async def test_defense_get_uses_reference_id_for_detail_operador(
+    caplog: pytest.LogCaptureFixture,
+):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="biodoc_intelbras")
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="00271368992672000",
+        status=True,
+        image="https://example.com/face.jpg",
+    )
+    biodoc_mock.get_integration_log.return_value = IntegrationLogData(
+        id="d0b22da4-8ebb-4426-bff9-a8ed03bd2876",
+        id_card="00271368992672000",
+        name=MOCK_USER_NAME,
+        status=7,
+        main_image="https://example.com/verify-capture.jpg",
+        path=None,
+        required_name=None,
+        operador="Colaboradores",
+        local_name=None,
+        local_source=None,
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = ASGITransport(app=app)
+    try:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get(
+                    "/webhook/biodoc",
+                    params={
+                        "card": "00271368992672000",
+                        "date": "09/06/2026 14:53:02",
+                        "response": "200",
+                        "reference_Id": "d0b22da4-8ebb-4426-bff9-a8ed03bd2876",
+                    },
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert "Colaboradores" in response.text
+    biodoc_mock.get_external_audits.assert_not_called()
+    defense_mock.sync_visitor.assert_awaited_once()
+    assert defense_mock.sync_visitor.await_args[0][1] == "Colaboradores"
 
 
 @pytest.mark.asyncio

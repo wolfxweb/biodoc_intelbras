@@ -31,10 +31,17 @@ from src.services.defense_ia_client import (
 from src.services.defense_sync import sync_to_defense
 
 AUDIT_LOOKUP_WINDOW_MINUTES = 15
-EXTERNAL_AUDITS_RETRY_SECONDS = 2.0
-EXTERNAL_AUDITS_RETRY_ATTEMPTS = 3
-# BioDoc sandbox: initialDate=endDate=hoje costuma retornar vazio; incluir dia anterior.
-AUDIT_FALLBACK_LOOKBACK_DAYS = 7
+AUDIT_EVENT_TOLERANCE_AFTER_MINUTES = 10
+# Polling no dia do evento — BioDoc pode indexar external-audits alguns segundos após o redirect.
+EXTERNAL_AUDITS_RETRY_SECONDS = 3.0
+EXTERNAL_AUDITS_RETRY_ATTEMPTS = 8
+
+OPERADOR_MISSING_DETAIL = (
+    "Regra de acesso (porta) não encontrada. Configure no parâmetro url= da verify, "
+    "por exemplo: ?org_code=VIVER (nome da regra no Defense). "
+    "Alternativa: reference_Id no redirect para GET /integrations/log/{reference_Id} "
+    "(documentação: https://docs.biodoc.com.br/detail/)"
+)
 
 
 def _parse_event_datetime(event_date: str | None) -> datetime | None:
@@ -66,18 +73,9 @@ def _audit_anchor_date(event_date: str | None) -> datetime.date:
 
 
 def _audit_date_ranges_to_try(event_date: str | None) -> list[tuple[str, str]]:
-    """
-    Janelas para GET /logs/external-audits.
-
-    A API BioDoc (sandbox) frequentemente retorna lista vazia quando
-    initialDate == endDate == hoje, mas encontra o log ao incluir o dia anterior.
-    """
+    """Janela única: dia do evento (consulta detail.operador do log desta verify)."""
     day = _audit_anchor_date(event_date)
-    yesterday = day - timedelta(days=AUDIT_FALLBACK_LOOKBACK_DAYS)
-    return [
-        (day.isoformat(), day.isoformat()),
-        (yesterday.isoformat(), day.isoformat()),
-    ]
+    return [(day.isoformat(), day.isoformat())]
 
 
 def _audit_entry_timestamp(entry: ExternalAuditEntry) -> datetime | None:
@@ -120,24 +118,68 @@ def _pick_best_audit_entry(
         )
         return sorted_entries[0] if sorted_entries else None
 
-    def distance(entry: ExternalAuditEntry) -> float:
-        entry_dt = _audit_entry_timestamp(entry)
-        if entry_dt is None:
-            return float("inf")
-        return abs((entry_dt - event_dt).total_seconds())
+    window_start = event_dt - timedelta(minutes=AUDIT_LOOKUP_WINDOW_MINUTES)
+    window_end = event_dt + timedelta(minutes=AUDIT_EVENT_TOLERANCE_AFTER_MINUTES)
 
-    return min(pool, key=distance)
+    def _entry_dt(entry: ExternalAuditEntry) -> datetime | None:
+        return _audit_entry_timestamp(entry)
+
+    in_window = [
+        e for e in pool
+        if (dt := _entry_dt(e)) is not None and window_start <= dt <= window_end
+    ]
+    if in_window:
+        return max(
+            in_window,
+            key=lambda e: _entry_dt(e) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+
+    same_day = [
+        e for e in pool
+        if (dt := _entry_dt(e)) is not None and dt.date() == event_dt.date()
+    ]
+    if same_day:
+        return max(
+            same_day,
+            key=lambda e: _entry_dt(e) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+
+    return None
 
 
-def _log_has_group_hints(log_data: IntegrationLogData) -> bool:
-    return bool(log_data.local_token or log_data.required_name)
+def _resolve_local_name(
+    *,
+    details_operador_hint: str | None,
+    audit_log: IntegrationLogData | None,
+) -> tuple[str | None, str | None]:
+    """Prioridade: operador (details URL) → detail.operador/usuclin (integrations/log)."""
+    if details_operador_hint and details_operador_hint.strip():
+        return details_operador_hint.strip(), "url.org_code"
+    if audit_log and audit_log.operador and audit_log.operador.strip():
+        return audit_log.operador.strip(), "integrations/log.detail.operador"
+    return None, None
+
+
+async def _resolve_log_by_reference_id(
+    reference_id: str,
+    biodoc_client: BiodocClient,
+) -> IntegrationLogData | None:
+    try:
+        return await biodoc_client.get_integration_log(reference_id)
+    except (BiodocAPIUnauthorizedError, BiodocAPIUnavailableError) as exc:
+        logger.warning(
+            "[WEBHOOK] GET /integrations/log/%s falhou (%s)",
+            reference_id,
+            exc,
+        )
+        return None
 
 
 async def _resolve_log_via_external_audits(
     card: str,
     event_date: str | None,
     biodoc_client: BiodocClient,
-) -> IntegrationLogData | None:
+) -> tuple[IntegrationLogData | None, str | None]:
     """
     Descobre o log da verify via GET /logs/external-audits + GET /integrations/log/{id}.
 
@@ -186,29 +228,37 @@ async def _resolve_log_via_external_audits(
         initial_date, end_date = date_ranges[-1]
     except (BiodocAPIUnauthorizedError, BiodocAPIUnavailableError) as exc:
         logger.warning(
-            "[WEBHOOK] card=%s external-audits indisponível (%s) — local_token via fallback",
+            "[WEBHOOK] card=%s external-audits indisponível (%s) — local via fallback",
             card,
             exc,
         )
-        return None
+        return None, None
 
     if not isinstance(entries, list):
         entries = []
 
     best = _pick_best_audit_entry(entries, event_date)
     if best is None or best.id is None:
-        tried = ", ".join(f"{a}..{b}" for a, b in date_ranges)
-        logger.info(
-            format_flow_step(
-                "external-audits sem entradas",
-                card=card,
-                janelas=tried,
-                event_date=event_date,
+        if entries:
+            logger.warning(
+                "[WEBHOOK] card=%s external-audits retornou %d log(s) sem "
+                "correspondência com event_date=%r — operador de log antigo ignorado",
+                card,
+                len(entries),
+                event_date,
             )
-        )
-        return None
+        else:
+            logger.warning(
+                "[WEBHOOK] card=%s external-audits vazio no dia %s após %d tentativas — "
+                "aguardando reference_Id no redirect para GET /integrations/log/{id}",
+                card,
+                date_ranges[0][0] if date_ranges else "?",
+                EXTERNAL_AUDITS_RETRY_ATTEMPTS,
+            )
+        return None, None
 
     ref_id = str(best.id)
+    audit_required_name = best.required_name
     logger.info(
         format_flow_step(
             "external-audits escolheu log",
@@ -216,37 +266,38 @@ async def _resolve_log_via_external_audits(
             audit_id=ref_id,
             audit_date=best.date,
             audit_status=best.status,
+            required_Name=audit_required_name,
         )
     )
     try:
         log_data = await biodoc_client.get_integration_log(ref_id)
     except (BiodocAPIUnauthorizedError, BiodocAPIUnavailableError) as exc:
         logger.warning(
-            "[WEBHOOK] card=%s GET /integrations/log/%s falhou (%s) — local_token via fallback",
+            "[WEBHOOK] card=%s GET /integrations/log/%s falhou (%s) — local via fallback",
             card,
             ref_id,
             exc,
         )
-        return None
+        return None, audit_required_name
 
-    if not _log_has_group_hints(log_data):
+    if not log_data.operador:
         logger.warning(
-            "[WEBHOOK] card=%s log id=%s sem local_token/requiredName",
+            "[WEBHOOK] card=%s log id=%s sem operador no detail",
             card,
             ref_id,
         )
-        return None
 
     logger.info(
         format_flow_step(
-            "local_token resolvido (external-audits → integrations/log)",
+            "integrations/log resolvido (external-audits → integrations/log)",
             card=card,
             audit_id=ref_id,
-            local_token=log_data.local_token,
+            operador=log_data.operador,
+            local_name=log_data.local_name,
             required_name=log_data.required_name,
         )
     )
-    return log_data
+    return log_data, audit_required_name
 
 
 def _unique_group_candidates(*values: str | None) -> list[str]:
@@ -270,11 +321,10 @@ async def _resolve_visitor_host(
     *,
     ref_label: str,
     defense_client: DefenseIAClient,
-    local_token: str | None = None,
-    required_name: str | None = None,
+    local_name: str | None = None,
 ) -> tuple[str, list[str], str | None]:
-    """Host visitante: local_token → requiredName → DEFENSE_IA_VISITED_NAME."""
-    candidates = _unique_group_candidates(local_token, required_name)
+    """Host visitante: operador → DEFENSE_IA_VISITED_NAME."""
+    candidates = _unique_group_candidates(local_name)
     matched_source: str | None = None
     resolved_host = ""
 
@@ -304,7 +354,7 @@ async def _resolve_visitor_host(
         else:
             logger.warning(
                 format_flow_step(
-                    "host visitante ausente (sem local_token/requiredName)",
+                    "host visitante ausente (sem operador)",
                     ref=ref_label,
                 )
             )
@@ -318,9 +368,8 @@ async def _sync_to_defense(
     card: str,
     name: str,
     face_b64: str,
-    required_name: str | None,
     defense_client: DefenseIAClient,
-    local_token: str | None = None,
+    local_name: str | None = None,
 ) -> dict:
     sync_request = SyncRequest(
         source="biodoc",
@@ -339,8 +388,7 @@ async def _sync_to_defense(
     resolved_host, _, _ = await _resolve_visitor_host(
         ref_label=ref_label,
         defense_client=defense_client,
-        local_token=local_token,
-        required_name=required_name,
+        local_name=local_name,
     )
 
     sync_result = await sync_to_defense(
@@ -374,10 +422,8 @@ async def _sync_to_defense(
         payload["visitorId"] = sync_result["visitor_id"]
     if sync_result.get("person_id"):
         payload["personId"] = sync_result["person_id"]
-    if local_token:
-        payload["local_name"] = local_token
-    elif required_name:
-        payload["local_name"] = required_name
+    if local_name:
+        payload["local_name"] = local_name
     return payload
 
 
@@ -416,12 +462,13 @@ async def process_biodoc_webhook_by_card(
     biodoc_client: BiodocClient,
     defense_client: DefenseIAClient,
     *,
-    required_name: str | None = None,
+    reference_id: str | None = None,
+    details_operador_hint: str | None = None,
     image_url_hint: str | None = None,
     event_date: str | None = None,
 ) -> dict:
     """
-    Fluxo via cartão: external-audits → integrations/log (imagem da verify) + mainimage.
+    Fluxo via cartão: integrations/log (reference_Id ou external-audits) + mainimage.
 
     `image_url_hint` aceita URL do payload do webhook quando integrations/log não tiver foto.
     """
@@ -451,18 +498,61 @@ async def process_biodoc_webhook_by_card(
             detail="Beneficiário inativo no BioDoc",
         )
 
-    local_token: str | None = None
-    effective_required_name = required_name
-    audit_log = await _resolve_log_via_external_audits(card, event_date, biodoc_client)
-    if audit_log:
-        local_token = audit_log.local_token
-        if effective_required_name is None:
-            effective_required_name = audit_log.required_name
-    elif effective_required_name is None:
-        logger.warning(
-            "[WEBHOOK] %s sem reference_Id/logId/id_Log e external-audits "
-            "não resolveu local_token — orgCode via operador/requiredName ou fallback",
+    audit_log: IntegrationLogData | None = None
+    audit_required_name: str | None = None
+
+    if reference_id:
+        audit_log = await _resolve_log_by_reference_id(reference_id, biodoc_client)
+        if audit_log:
+            logger.info(
+                format_flow_step(
+                    "integrations/log resolvido (reference_Id → detail.operador)",
+                    card=card,
+                    audit_id=reference_id,
+                    operador=audit_log.operador,
+                )
+            )
+        elif not details_operador_hint:
+            logger.warning(
+                "[WEBHOOK] %s GET /integrations/log/%s sem resposta — operador via detail indisponível",
+                ref_label,
+                reference_id,
+            )
+    elif details_operador_hint:
+        logger.info(
+            "[WEBHOOK] %s operador na URL (%r) — external-audits ignorado",
             ref_label,
+            details_operador_hint,
+        )
+    else:
+        audit_log, audit_required_name = await _resolve_log_via_external_audits(
+            card, event_date, biodoc_client
+        )
+
+    resolved_local_name, local_source = _resolve_local_name(
+        details_operador_hint=details_operador_hint,
+        audit_log=audit_log,
+    )
+    if resolved_local_name:
+        logger.info(
+            format_flow_step(
+                "operador resolvido",
+                ref=ref_label,
+                operador=resolved_local_name,
+                fonte=local_source,
+            )
+        )
+    elif not reference_id:
+        logger.warning(
+            "[WEBHOOK] %s sem reference_Id e sem operador na requisição — "
+            "consulta BioDoc detail.operador não resolvida",
+            ref_label,
+        )
+
+    if not resolved_local_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=OPERADOR_MISSING_DETAIL,
         )
 
     effective_image, image_source = _pick_face_image_url(
@@ -511,8 +601,7 @@ async def process_biodoc_webhook_by_card(
         card=card_data.card or card,
         name=name,
         face_b64=face_b64,
-        required_name=effective_required_name,
-        local_token=local_token,
+        local_name=resolved_local_name,
         defense_client=defense_client,
     )
 

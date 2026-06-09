@@ -186,17 +186,26 @@ Exemplos de URL:
 | Homolog Wolfx | `https://homologa.wolfx.com.br/webhook/biodoc` |
 | Local (só teste interno) | `http://IP:8000/webhook/biodoc` — **o BioDoc na nuvem normalmente não alcança localhost** |
 
-**Não** acrescente parâmetros na URL do webhook (`?operador=`, `?details=`, etc.).
-O middleware resolve orgCode via `GET /integrations/log/{reference_Id}` usando
-**local_token** (`json.Local Token`) e, em seguida, **reguiredName**.
+O middleware resolve o local via `GET /integrations/log/{reference_Id}` usando
+**`reguiredName`** (campo oficial da API BioDoc) e, em fallback, campos do
+**`detail`** (`nmLocal`, `RequiredName`, etc.) conforme a
+[doc Detail](https://docs.biodoc.com.br/detail/#estrutura-do-json-detail).
+O parâmetro **`details`** da URL verify (`nmLocal`, …) tem prioridade quando
+repassado no redirect.
 
-**Fallback quando o POST urlWebhook não traz `reference_Id`/`logId`/`id_Log`**
+Exemplo de URL verify:
+
+```
+details={"operador":"VIVER","nmLocal":"CHU - ESPAÇO VIVER BEM"}
+```
+
+**Fallback quando o redirect não traz `reference_Id`/`logId`/`id_Log`**
 (o BioDoc envia só `card` + `image`):
 
 1. `GET /logs/external-audits?idCard={card}&initialDate=&endDate=` — janela de ±15 min
    em torno de `date` do payload (ou últimos 15 min se `date` ausente)
 2. Escolhe o log mais recente / mais próximo do timestamp do evento
-3. `GET /integrations/log/{id}` — extrai `local_token`, `reguiredName`
+3. `GET /integrations/log/{id}` — extrai `reguiredName`, `detail.nmLocal`
 
 Se external-audits ou integrations/log falhar, o sync continua com `orgCode` fallback (`001`).
 
@@ -283,9 +292,9 @@ Resposta esperada (estrutura simplificada):
 }
 ```
 
-O middleware extrai **local_token** (`json.Local Token`) e **reguiredName** do
-log para mapear `orgCode` no Defense IA (ordem: local_token → reguiredName →
-fallback `001`). O campo `detail.operador` da verify **não** é usado.
+O middleware extrai **local_name** (`reguiredName`, `detail.nmLocal`, `details` da URL)
+do log para mapear `visitedName` no Defense IA (ordem: details URL → reguiredName →
+detail → required_Name → fallback `.env`).
 Identificadores aceitos no POST do webhook:
 `reference_Id` → `logId` → `id_Log` (convertido para string na chamada à API).
 

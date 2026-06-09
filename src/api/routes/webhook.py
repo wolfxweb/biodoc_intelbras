@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 
 from src.api.biodoc_success_page import render_unimed_error_page, render_unimed_success_page
 from src.api.dependencies import get_biodoc_client, get_defense_client
+from src.core.webhook_query import parse_biodoc_redirect_query
 from src.services.biodoc_client import BiodocClient
 from src.services.defense_callback_service import process_defense_biodoc_callback
 from src.services.defense_ia_client import DefenseIAClient
@@ -32,7 +33,7 @@ async def webhook_biodoc_callback(
     biodoc_client: Annotated[BiodocClient, Depends(get_biodoc_client)],
     defense_client: Annotated[DefenseIAClient, Depends(get_defense_client)],
 ) -> HTMLResponse:
-    params = request.query_params
+    params = parse_biodoc_redirect_query(request.url.query)
     card = params.get("card", "").strip()
 
     try:
@@ -40,8 +41,19 @@ async def webhook_biodoc_callback(
             card=card or None,
             response=params.get("response"),
             event_date=params.get("date"),
-            operador=params.get("operador"),
+            reference_id=params.get("reference_Id"),
+            reference_id_alt=params.get("reference_id"),
+            reference_id_camel=params.get("referenceId"),
+            log_id=params.get("logId"),
+            id_log=params.get("id_Log"),
+            id_transaction=params.get("idTransaction"),
             details=params.get("details"),
+            detail=params.get("detail"),
+            org_code=params.get("org_code"),
+            operador=params.get("operador"),
+            local=params.get("local"),
+            local_de_acesso=params.get("local_de_acesso"),
+            acesso=params.get("acesso"),
             biodoc_client=biodoc_client,
             defense_client=defense_client,
         )

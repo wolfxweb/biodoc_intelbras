@@ -284,7 +284,7 @@ Todo cadastro no Defense é **visitante**. Cada chamada gera uma **nova visita**
 
 | Fluxo | Destino no Defense | Portas |
 |-------|-------------------|--------|
-| **Webhook BioDoc** (`GET /webhook/biodoc`) | Automático (`local_token` / `reguiredName` → host visitante) | Automático |
+| **Webhook BioDoc** (`GET /webhook/biodoc`) | Automático (`local_name` / `reguiredName` / `details.nmLocal` → host visitante) | Automático |
 | **POST /v1/person/sync** | `defense.org_code` = **nome da regra de acesso** no painel | Automático |
 
 Exemplo de body para sync manual: [`data/test_post_sync.json`](data/test_post_sync.json) — resumo em [`data/test_post_sync.md`](data/test_post_sync.md).

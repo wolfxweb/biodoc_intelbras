@@ -1,0 +1,17 @@
+# URL de teste BioDoc Verify — troque ORG_CODE pelo nome da regra/porta no Defense
+# Exemplos: VIVER | Colaboradores | CHU - CENTRAL
+#
+# IMPORTANTE: use org_code na query da verify (antes do url=), NÃO dentro do url=
+# com "?" — o BioDoc quebra o redirect e o card some.
+#
+# Copie a linha abaixo (sem #) no navegador:
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22ORG_CODE%22%7D&org_code=ORG_CODE&url=https://homologa.wolfx.com.br/webhook/biodoc
+
+# Exemplo pronto (VIVER):
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&org_code=VIVER&url=https://homologa.wolfx.com.br/webhook/biodoc
+
+# Alternativa (url= com org_code encoded — se precisar fixar só no callback):
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc%3Forg_code%3DVIVER

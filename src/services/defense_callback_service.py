@@ -7,7 +7,10 @@ import json
 from fastapi import HTTPException, status
 
 from src.core.logging import logger
-from src.services.biodoc_client import BiodocClient
+from src.services.biodoc_client import (
+    BiodocClient,
+    _extract_operador_from_detail,
+)
 from src.services.biodoc_webhook_service import process_biodoc_webhook_by_card
 from src.services.defense_ia_client import DefenseIAClient
 
@@ -39,11 +42,81 @@ def _operador_from_details_raw(details: str | None) -> str | None:
         return None
     if not isinstance(parsed, dict):
         return None
-    for key in ("operador", "operator", "grupo"):
-        raw = parsed.get(key)
-        if raw is not None and str(raw).strip():
-            return str(raw).strip()
+    return _extract_operador_from_detail(parsed)
+
+
+def _operador_from_plain_query(*values: str | None) -> str | None:
+    for raw in values:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text or text.lower() in ("null", "undefined", "none"):
+            continue
+        return text
     return None
+
+
+def operador_from_callback_query(
+    *,
+    details: str | None = None,
+    detail: str | None = None,
+    org_code: str | None = None,
+    operador: str | None = None,
+    local: str | None = None,
+    local_de_acesso: str | None = None,
+    acesso: str | None = None,
+) -> str | None:
+    """Regra de acesso / porta (Defense visitedName) vinda da URL do redirect.
+
+    Prioridade:
+    1. `details` / `detail` (JSON) — operador, usuclin, org_code
+    2. Parâmetros diretos: org_code, operador, local, local_de_acesso, acesso
+
+    Exemplo na URL verify (parâmetro url=):
+    https://homologa.wolfx.com.br/webhook/biodoc?org_code=VIVER
+    """
+    for raw in (details, detail):
+        value = _operador_from_details_raw(raw)
+        if value:
+            return value
+    return _operador_from_plain_query(
+        org_code,
+        operador,
+        local,
+        local_de_acesso,
+        acesso,
+    )
+
+
+def _reference_id_from_query(*values: str | None) -> str | None:
+    for raw in values:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text or text.lower() in ("null", "undefined", "none"):
+            continue
+        return text
+    return None
+
+
+def reference_id_from_callback_query(
+    *,
+    reference_id: str | None = None,
+    reference_id_alt: str | None = None,
+    reference_id_camel: str | None = None,
+    log_id: str | None = None,
+    id_log: str | None = None,
+    id_transaction: str | None = None,
+) -> str | None:
+    """Identificador do log BioDoc para GET /integrations/log/{id} → detail.operador."""
+    return _reference_id_from_query(
+        reference_id,
+        reference_id_alt,
+        reference_id_camel,
+        log_id,
+        id_log,
+        id_transaction,
+    )
 
 
 async def process_defense_biodoc_callback(
@@ -51,8 +124,19 @@ async def process_defense_biodoc_callback(
     card: str | None,
     response: str | None,
     event_date: str | None,
-    operador: str | None,
-    details: str | None,
+    reference_id: str | None = None,
+    log_id: str | None = None,
+    id_log: str | None = None,
+    id_transaction: str | None = None,
+    reference_id_alt: str | None = None,
+    reference_id_camel: str | None = None,
+    details: str | None = None,
+    detail: str | None = None,
+    org_code: str | None = None,
+    operador: str | None = None,
+    local: str | None = None,
+    local_de_acesso: str | None = None,
+    acesso: str | None = None,
     biodoc_client: BiodocClient,
     defense_client: DefenseIAClient,
 ) -> dict:
@@ -75,11 +159,29 @@ async def process_defense_biodoc_callback(
             "defense_sync": "skipped",
         }
 
-    effective_operador = operador or _operador_from_details_raw(details)
+    effective_reference_id = reference_id_from_callback_query(
+        reference_id=reference_id,
+        reference_id_alt=reference_id_alt,
+        reference_id_camel=reference_id_camel,
+        log_id=log_id,
+        id_log=id_log,
+        id_transaction=id_transaction,
+    )
+    details_operador_hint = operador_from_callback_query(
+        details=details,
+        detail=detail,
+        org_code=org_code,
+        operador=operador,
+        local=local,
+        local_de_acesso=local_de_acesso,
+        acesso=acesso,
+    )
     logger.info(
-        "[DEFENSE] card=%s date=%r — iniciando external-audits → Defense IA",
+        "[DEFENSE] card=%s date=%r reference_id=%r operador_requisicao=%r — iniciando sync Defense IA",
         card_value,
         event_date,
+        effective_reference_id,
+        details_operador_hint,
     )
 
     return await process_biodoc_webhook_by_card(
@@ -87,5 +189,6 @@ async def process_defense_biodoc_callback(
         biodoc_client,
         defense_client,
         event_date=event_date,
-        required_name=effective_operador,
+        reference_id=effective_reference_id,
+        details_operador_hint=details_operador_hint,
     )

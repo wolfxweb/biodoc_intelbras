@@ -1,8 +1,10 @@
 from src.core.webhook_log import (
+    format_biodoc_call,
     format_fields_block,
     format_inbound_request,
     format_json_pretty,
     format_payload_summary,
+    sanitize_biodoc_payload_for_log,
 )
 
 
@@ -50,3 +52,29 @@ def test_format_fields_block_aligns_keys():
     text = format_fields_block("[TEST]", {"a": 1, "long_key": "value"})
     assert "long_key" in text
     assert "value" in text
+
+
+def test_sanitize_biodoc_payload_expands_detail_json():
+    sanitized = sanitize_biodoc_payload_for_log(
+        {"detail": '{"operador":"VIVER","nmLocal":"Hospital"}', "mainImage": "x" * 200}
+    )
+    assert isinstance(sanitized, dict)
+    assert sanitized["detail"] == {"operador": "VIVER", "nmLocal": "Hospital"}
+    assert len(str(sanitized["mainImage"])) <= 123
+
+
+def test_format_biodoc_call_includes_response_body():
+    from src.core.webhook_log import format_biodoc_call
+
+    text = format_biodoc_call(
+        direction="IN",
+        method="GET",
+        path="/integrations/log/ref-1",
+        status=200,
+        fields={"detail.operador": "VIVER"},
+        response_body={"detail": '{"operador":"VIVER"}', "id_Card": "123"},
+    )
+    assert "detail.operador" in text
+    assert "VIVER" in text
+    assert "response:" in text
+    assert "id_Card" in text

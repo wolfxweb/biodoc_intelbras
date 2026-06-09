@@ -1,0 +1,35 @@
+================================================================================
+URLs de teste — BioDoc Verify → Webhook Homolog Wolfx
+================================================================================
+
+Altere ORG_CODE pelo nome da regra de acesso / porta no Defense (ex.: VIVER).
+
+Arquivo rápido na raiz do projeto: url_exemple.txt
+
+--------------------------------------------------------------------------------
+1) RECOMENDADO — org_code no callback (url=) → nome correto da porta no Defense
+--------------------------------------------------------------------------------
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22ORG_CODE%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc?org_code=ORG_CODE
+                                                                                                                                                                                                                                                                                          ^^^^^^^^^^^^^^^^^^
+                                                                                                                                                                                                                                                                                          <<< TROCAR AQUI >>>
+
+Exemplo VIVER:
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc?org_code=VIVER
+
+Exemplo Colaboradores:
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22Colaboradores%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc?org_code=Colaboradores
+
+--------------------------------------------------------------------------------
+2) Log esperado (sucesso)
+--------------------------------------------------------------------------------
+
+  operador_requisicao='VIVER'
+  operador na URL ('VIVER') — external-audits ignorado
+  operador resolvido ... fonte=url.org_code
+  visitedName=VIVER
+  HTTP 200
+
+================================================================================

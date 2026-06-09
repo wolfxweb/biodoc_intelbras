@@ -136,10 +136,70 @@ def format_biodoc_call(
     path: str,
     status: int | None = None,
     fields: dict[str, object] | None = None,
+    response_body: object = None,
 ) -> str:
     title = f"[BIODOC {direction}] {method} {path}"
     if status is not None:
         title = f"{title} → HTTP {status}"
-    if not fields:
-        return title
-    return format_fields_block(title, fields)
+    lines: list[str] = []
+    if fields:
+        lines.append(format_fields_block(title, fields))
+    else:
+        lines.append(title)
+    if response_body is not None:
+        lines.append("  response:")
+        lines.append(
+            indent_block(
+                format_json_pretty(sanitize_biodoc_payload_for_log(response_body)),
+                spaces=4,
+            )
+        )
+    return "\n".join(lines)
+
+
+_BIODOC_TRUNCATE_URL_KEYS = frozenset(
+    {
+        "mainImage",
+        "path",
+        "image",
+        "base64Image",
+        "thumbNail",
+        "url",
+    }
+)
+
+
+def sanitize_biodoc_payload_for_log(payload: object, *, max_url_len: int = 120) -> object:
+    """Copia payload para log, truncando URLs longas e expandindo detail JSON."""
+    if isinstance(payload, list):
+        return [
+            sanitize_biodoc_payload_for_log(item, max_url_len=max_url_len) for item in payload
+        ]
+    if not isinstance(payload, dict):
+        return payload
+
+    sanitized: dict[str, object] = {}
+    for key, value in payload.items():
+        if (
+            key in _BIODOC_TRUNCATE_URL_KEYS
+            and isinstance(value, str)
+            and len(value) > max_url_len
+        ):
+            sanitized[key] = truncate_text(value, max_len=max_url_len)
+        elif key == "detail" and isinstance(value, str) and value.strip():
+            try:
+                parsed_detail = json.loads(value)
+            except (ValueError, TypeError):
+                sanitized[key] = value
+            else:
+                sanitized[key] = sanitize_biodoc_payload_for_log(
+                    parsed_detail,
+                    max_url_len=max_url_len,
+                )
+        elif isinstance(value, dict):
+            sanitized[key] = sanitize_biodoc_payload_for_log(value, max_url_len=max_url_len)
+        elif isinstance(value, list):
+            sanitized[key] = sanitize_biodoc_payload_for_log(value, max_url_len=max_url_len)
+        else:
+            sanitized[key] = value
+    return sanitized

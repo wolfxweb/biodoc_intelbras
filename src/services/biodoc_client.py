@@ -66,41 +66,81 @@ class IntegrationLogData:
     path: str | None
     required_name: str | None
     operador: str | None = None
-    local_token: str | None = None
+    local_name: str | None = None
+    local_source: str | None = None
 
 
-def _extract_local_token_from_log_record(data: dict[str, object]) -> str | None:
-    """Local Token do log BioDoc (ex.: 'CHU - ESPAÇO VIVER BEM')."""
-    json_block = data.get("json")
-    if not isinstance(json_block, dict):
-        return None
-    raw = json_block.get("Local Token") or json_block.get("localToken")
-    if raw is None:
-        return None
-    value = str(raw).strip()
-    return value or None
+_DETAIL_LOCAL_KEYS = (
+    "nmLocal",
+    "RequiredName",
+    "requiredName",
+    "local",
+    "prestNome",
+    "prestador",
+)
 
 
-def _extract_operador_from_log_record(data: dict[str, object]) -> str | None:
-    """Operador pode vir em `detail` (JSON string ou dict) ou em `json.Operador`."""
-    detail = data.get("detail")
+def _parse_detail_block(detail: object) -> dict[str, object]:
+    """Normaliza `detail` do log BioDoc (dict ou string JSON)."""
     if isinstance(detail, dict):
-        raw = detail.get("operador") or detail.get("operator") or detail.get("grupo")
-        if raw is not None:
-            value = str(raw).strip()
-            if value:
-                return value
+        return detail
     if isinstance(detail, str) and detail.strip():
         try:
             parsed = json.loads(detail)
         except ValueError:
-            parsed = None
+            return {}
         if isinstance(parsed, dict):
-            raw = parsed.get("operador") or parsed.get("operator") or parsed.get("grupo")
-            if raw is not None:
-                value = str(raw).strip()
-                if value:
-                    return value
+            return parsed
+    return {}
+
+
+def _extract_operador_from_detail(detail: object) -> str | None:
+    """Grupo/regra de acesso a partir do bloco detail (doc BioDoc Detail).
+
+    Chaves oficiais: operador, usuclin — https://docs.biodoc.com.br/detail/
+    """
+    block = _parse_detail_block(detail)
+    for key in ("operador", "usuclin", "org_code", "orgCode", "operator", "grupo"):
+        raw = block.get(key)
+        if raw is not None:
+            value = str(raw).strip()
+            if value:
+                return value
+    return None
+
+
+def _extract_local_name_from_detail(detail: object) -> str | None:
+    """Nome do local a partir do bloco detail (doc BioDoc Detail)."""
+    block = _parse_detail_block(detail)
+    for key in _DETAIL_LOCAL_KEYS:
+        raw = block.get(key)
+        if raw is not None:
+            value = str(raw).strip()
+            if value:
+                return value
+    return None
+
+
+def _resolve_local_name_from_log(data: dict[str, object]) -> tuple[str | None, str | None]:
+    """Resolve local: reguiredName (API) → campos do detail (nmLocal, RequiredName, ...)."""
+    raw_required = data.get("requiredName") or data.get("reguiredName")
+    if raw_required is not None:
+        value = str(raw_required).strip()
+        if value:
+            return value, "reguiredName"
+
+    from_detail = _extract_local_name_from_detail(data.get("detail"))
+    if from_detail:
+        return from_detail, "detail"
+
+    return None, None
+
+
+def _extract_operador_from_log_record(data: dict[str, object]) -> str | None:
+    """Operador pode vir em `detail` (JSON string ou dict) ou em `json.Operador`."""
+    from_detail = _extract_operador_from_detail(data.get("detail"))
+    if from_detail:
+        return from_detail
 
     json_block = data.get("json")
     if isinstance(json_block, dict):
@@ -111,6 +151,37 @@ def _extract_operador_from_log_record(data: dict[str, object]) -> str | None:
                 return value
 
     return None
+
+
+def _integration_log_log_fields(
+    *,
+    reference_id: str,
+    data: dict[str, object],
+    operador: str | None,
+) -> dict[str, object]:
+    """Campos explícitos do GET /integrations/log para o log (inclui detail.operador)."""
+    detail_block = _parse_detail_block(data.get("detail"))
+    json_block = data.get("json") if isinstance(data.get("json"), dict) else {}
+    return {
+        "reference_Id": reference_id,
+        "id": data.get("id"),
+        "id_Card": data.get("id_Card") or data.get("idCard"),
+        "name": data.get("name") or data.get("userName"),
+        "status": data.get("status"),
+        "date": data.get("date"),
+        "reguiredName": data.get("reguiredName") or data.get("requiredName"),
+        "description": data.get("description"),
+        "observation": data.get("observation"),
+        "auditor": data.get("auditor"),
+        "id_Company": data.get("id_Company"),
+        "containsHistory": data.get("containsHistory"),
+        "detail.operador": operador
+        or detail_block.get("operador")
+        or detail_block.get("usuclin"),
+        "detail.usuclin": detail_block.get("usuclin"),
+        "detail": detail_block if detail_block else data.get("detail"),
+        "json.Operador": json_block.get("Operador") or json_block.get("operador"),
+    }
 
 
 def _unwrap_biodoc_payload(body: object) -> dict[str, object]:
@@ -175,7 +246,14 @@ class BiodocClient:
         if self._client is None:
             raise BiodocAPIUnavailableError("BiodocClient não iniciado")
 
-        logger.debug("[BIODOC OUT] GET /card/integration/mainimage idCard=%s", card)
+        logger.info(
+            format_biodoc_call(
+                direction="OUT",
+                method="GET",
+                path="/card/integration/mainimage",
+                fields={"idCard": card},
+            )
+        )
         try:
             response = await self._client.get(
                 "/card/integration/mainimage",
@@ -190,16 +268,32 @@ class BiodocClient:
                 f"Erro de rede ao consultar BioDoc (idCard={card}): {exc}"
             ) from exc
 
-        logger.debug(
-            "[BIODOC IN] GET /card/integration/mainimage idCard=%s status=%d",
-            card,
-            response.status_code,
-        )
-
         if response.status_code == 401:
+            logger.warning(
+                format_biodoc_call(
+                    direction="IN",
+                    method="GET",
+                    path="/card/integration/mainimage",
+                    status=response.status_code,
+                    fields={"idCard": card},
+                    response_body=_unwrap_biodoc_payload(response.json())
+                    if response.headers.get("content-type", "").startswith("application/json")
+                    else response.text[:500],
+                )
+            )
             raise BiodocAPIUnauthorizedError("BIODOC_TOKEN_API recusado pela API BioDoc")
 
         if not response.is_success:
+            logger.warning(
+                format_biodoc_call(
+                    direction="IN",
+                    method="GET",
+                    path="/card/integration/mainimage",
+                    status=response.status_code,
+                    fields={"idCard": card},
+                    response_body=response.text[:500],
+                )
+            )
             raise BiodocAPIUnavailableError(
                 f"API BioDoc retornou status inesperado {response.status_code} "
                 f"para idCard={card}"
@@ -214,12 +308,37 @@ class BiodocClient:
 
         data = _unwrap_biodoc_payload(body)
         if not data:
+            logger.warning(
+                format_biodoc_call(
+                    direction="IN",
+                    method="GET",
+                    path="/card/integration/mainimage",
+                    status=response.status_code,
+                    fields={"idCard": card},
+                    response_body=body,
+                )
+            )
             raise BiodocAPIUnavailableError(
                 "Resposta da API BioDoc em formato inesperado (objeto vazio)"
             )
 
         status_raw = data.get("status", data.get("cardStatus"))
         image = data.get("image") or data.get("mainImage") or data.get("base64Image")
+
+        logger.info(
+            format_biodoc_call(
+                direction="IN",
+                method="GET",
+                path="/card/integration/mainimage",
+                status=response.status_code,
+                fields={
+                    "idCard": card,
+                    "name": data.get("name"),
+                    "status": status_raw,
+                },
+                response_body=data,
+            )
+        )
 
         return CardMainImageData(
             name=str(data.get("name") or ""),
@@ -277,10 +396,14 @@ class BiodocClient:
 
         if not response.is_success:
             logger.warning(
-                "[BIODOC IN] body status=%d idCard=%s body=%s",
-                response.status_code,
-                id_card,
-                response.text[:500],
+                format_biodoc_call(
+                    direction="IN",
+                    method="GET",
+                    path="/logs/external-audits",
+                    status=response.status_code,
+                    fields={"idCard": id_card},
+                    response_body=response.text[:500],
+                )
             )
             raise BiodocAPIUnavailableError(
                 f"API BioDoc retornou status inesperado {response.status_code} "
@@ -304,6 +427,7 @@ class BiodocClient:
                     path="/logs/external-audits",
                     status=response.status_code,
                     fields={"idCard": id_card, "count": 0},
+                    response_body=body,
                 )
             )
             return []
@@ -333,6 +457,7 @@ class BiodocClient:
                 path="/logs/external-audits",
                 status=response.status_code,
                 fields={"idCard": id_card, "count": len(entries)},
+                response_body=body,
             )
         )
         return entries
@@ -370,18 +495,27 @@ class BiodocClient:
 
         if response.status_code == 401:
             logger.warning(
-                "[BIODOC IN] body 401 reference_id=%s body=%s",
-                reference_id,
-                response.text[:500],
+                format_biodoc_call(
+                    direction="IN",
+                    method="GET",
+                    path=f"/integrations/log/{reference_id}",
+                    status=response.status_code,
+                    fields={"reference_Id": reference_id},
+                    response_body=response.text[:2000],
+                )
             )
             raise BiodocAPIUnauthorizedError("BIODOC_TOKEN_API recusado pela API BioDoc")
 
         if not response.is_success:
             logger.warning(
-                "[BIODOC IN] body status=%d reference_id=%s body=%s",
-                response.status_code,
-                reference_id,
-                response.text[:500],
+                format_biodoc_call(
+                    direction="IN",
+                    method="GET",
+                    path=f"/integrations/log/{reference_id}",
+                    status=response.status_code,
+                    fields={"reference_Id": reference_id},
+                    response_body=response.text[:2000],
+                )
             )
             raise BiodocAPIUnavailableError(
                 f"API BioDoc retornou status inesperado {response.status_code} "
@@ -408,22 +542,20 @@ class BiodocClient:
             )
 
         operador = _extract_operador_from_log_record(data)
-        local_token = _extract_local_token_from_log_record(data)
+        local_name, local_source = _resolve_local_name_from_log(data)
+        required_name_raw = data.get("requiredName") or data.get("reguiredName")
         logger.info(
             format_biodoc_call(
                 direction="IN",
                 method="GET",
                 path=f"/integrations/log/{reference_id}",
                 status=response.status_code,
-                fields={
-                    "id_Card": id_card,
-                    "name": data.get("name") or data.get("userName"),
-                    "status": data.get("status"),
-                    "detail": "present" if data.get("detail") else "absent",
-                    "operador": operador,
-                    "local_token": local_token,
-                    "required_name": data.get("requiredName") or data.get("reguiredName"),
-                },
+                fields=_integration_log_log_fields(
+                    reference_id=reference_id,
+                    data=data,
+                    operador=operador,
+                ),
+                response_body=data,
             )
         )
 
@@ -434,7 +566,8 @@ class BiodocClient:
             status=int(data.get("status") or 0),
             main_image=data.get("mainImage") or None,  # type: ignore[arg-type]
             path=data.get("path") or None,  # type: ignore[arg-type]
-            required_name=data.get("requiredName") or data.get("reguiredName") or None,  # type: ignore[arg-type]
+            required_name=required_name_raw or None,  # type: ignore[arg-type]
             operador=operador,
-            local_token=local_token,
+            local_name=local_name,
+            local_source=local_source,
         )
