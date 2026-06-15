@@ -5,7 +5,7 @@
 O middleware atua como uma **ponte entre o sistema BIODOC e a API do Intelbras Defense IA**. Suporta dois fluxos de entrada:
 
 - **Fluxo manual / API direta:** `POST /v1/person/sync` — qualquer sistema envia nome, documento e imagem; o middleware autentica via `ADMIN_API_TOKEN` e repassa ao Defense IA.
-- **Fluxo nativo BioDoc:** `GET /webhook/biodoc` — redirect do navegador após verify; o middleware consulta a API BioDoc e registra visitante no Defense IA.
+- **Fluxo nativo BioDoc:** `GET /biodoc` — redirect do navegador após verify; o middleware consulta a API BioDoc e registra visitante no Defense IA.
 
 ---
 
@@ -28,7 +28,7 @@ src/
 │   ├── schemas_biodoc.py                # BiodocWebhookPayload/Response
 │   └── routes/
 │       ├── sync.py                      # POST /v1/person/sync
-│       └── webhook.py                   # GET/POST /webhook/biodoc
+│       └── webhook.py                   # GET/POST /biodoc
 └── services/
     ├── defense_ia_client.py             # Cliente HTTP Intelbras (BRMS/legacy)
     ├── defense_ia_crypto.py             # RSA para login BRMS
@@ -44,7 +44,7 @@ src/
 ## Fluxo Webhook BioDoc
 
 ```
-BioDoc Verify ──GET /webhook/biodoc?card=...──▶ Middleware
+BioDoc Verify ──GET /biodoc?card=...──▶ Middleware
 
 Middleware:
   1. Valida response=success (query params)

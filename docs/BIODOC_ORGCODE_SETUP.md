@@ -184,7 +184,7 @@ container.
           │ liveness / cadastro
           ▼
 ┌───────────────────┐
-│ 2) Webhook BioDoc │  POST /webhook/biodoc {reference_Id, success, status, url, ...}
+│ 2) Webhook BioDoc │  POST /biodoc {reference_Id, success, status, url, ...}
 └─────────┬─────────┘
           │
           ▼

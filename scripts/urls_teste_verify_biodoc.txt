@@ -2,28 +2,35 @@
 URLs de teste — BioDoc Verify → Webhook Homolog Wolfx
 ================================================================================
 
-Altere ORG_CODE pelo nome da regra de acesso / porta no Defense (ex.: VIVER).
+PADRÃO OFICIAL — troque NOME_DA_PORTA em details e em url= (encoded).
 
-Arquivo rápido na raiz do projeto: url_exemple.txt
+Arquivo rápido na raiz: url_exemple.txt
+
+Encoding: %3F = ?   %3D = =
+Callback: https://un.wolfx.com.br/biodoc?org_code=NOME_DA_PORTA
 
 --------------------------------------------------------------------------------
-1) RECOMENDADO — org_code no callback (url=) → nome correto da porta no Defense
+Template
 --------------------------------------------------------------------------------
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22ORG_CODE%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc?org_code=ORG_CODE
-                                                                                                                                                                                                                                                                                          ^^^^^^^^^^^^^^^^^^
-                                                                                                                                                                                                                                                                                          <<< TROCAR AQUI >>>
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22NOME_DA_PORTA%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DNOME_DA_PORTA
+                                                                                                                                                                                                                                                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                                                                                                                                                                                                                                                                          <<< TROCAR NOME_DA_PORTA (2x) >>>
 
 Exemplo VIVER:
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc?org_code=VIVER
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DVIVER
+
+Exemplo Oncologia:
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22Oncologia%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DOncologia
 
 Exemplo Colaboradores:
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22Colaboradores%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc?org_code=Colaboradores
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22Colaboradores%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DColaboradores
 
 --------------------------------------------------------------------------------
-2) Log esperado (sucesso)
+Log esperado (sucesso)
 --------------------------------------------------------------------------------
 
   operador_requisicao='VIVER'

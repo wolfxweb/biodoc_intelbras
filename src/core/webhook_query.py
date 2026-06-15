@@ -1,8 +1,32 @@
-"""Parsing de query string no redirect BioDoc (GET /webhook/biodoc)."""
+"""Parsing de query string no redirect BioDoc (GET /biodoc)."""
 
 from __future__ import annotations
 
-from urllib.parse import parse_qsl
+import re
+from urllib.parse import parse_qsl, unquote
+
+_MALFORMED_ORG_CODE_KEY = re.compile(
+    r"^org_code%3[dD]?(?P<value>.+)$",
+    re.IGNORECASE,
+)
+
+
+def _recover_org_code_from_malformed_params(parsed: dict[str, str]) -> None:
+    """Recupera org_code quando o redirect traz chave corrompida (ex.: ``org_code%3Oncologia``).
+
+    Ocorre se ``url=`` na verify usa encoding incompleto (``%3`` em vez de ``%3D``).
+    """
+    existing = (parsed.get("org_code") or "").strip()
+    if existing:
+        return
+    for key, value in parsed.items():
+        match = _MALFORMED_ORG_CODE_KEY.match(key)
+        if not match:
+            continue
+        candidate = (value or match.group("value") or "").strip()
+        if candidate:
+            parsed["org_code"] = unquote(candidate)
+            return
 
 
 def parse_biodoc_redirect_query(query: str) -> dict[str, str]:
@@ -15,4 +39,6 @@ def parse_biodoc_redirect_query(query: str) -> dict[str, str]:
     if not query:
         return {}
     normalized = query.replace("?", "&")
-    return dict(parse_qsl(normalized, keep_blank_values=True))
+    parsed = dict(parse_qsl(normalized, keep_blank_values=True))
+    _recover_org_code_from_malformed_params(parsed)
+    return parsed

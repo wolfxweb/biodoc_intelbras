@@ -175,7 +175,7 @@ curl -X DELETE http://localhost:8000/v1/integration-sources/1 \
 
 ## Webhook BioDoc — fluxo nativo
 
-O endpoint `/webhook/biodoc` recebe eventos automáticos do BioDoc após validação de liveness, consulta a API BioDoc para obter nome e foto, e sincroniza o beneficiário no Defense IA.
+O endpoint `/biodoc` recebe eventos automáticos do BioDoc após validação de liveness, consulta a API BioDoc para obter nome e foto, e sincroniza o beneficiário no Defense IA.
 
 **Guia completo (sandbox + produção, painel BioDoc, rede, checklist):** [docs/INTEGRACAO_BIODOC_AMBIENTE_REAL.md](docs/INTEGRACAO_BIODOC_AMBIENTE_REAL.md)
 
@@ -188,7 +188,7 @@ O endpoint `/webhook/biodoc` recebe eventos automáticos do BioDoc após valida�
    BIODOC_WEBHOOK_TOKEN=<token que você define e configura no painel BioDoc>
    ```
 2. No painel BioDoc, configure o WebHook:
-   - URL: `https://homologa.wolfx.com.br/webhook/biodoc`
+   - URL: `https://un.wolfx.com.br/biodoc`
    - Token: mesmo valor de `BIODOC_WEBHOOK_TOKEN`
 
 ### Fluxo técnico
@@ -196,7 +196,7 @@ O endpoint `/webhook/biodoc` recebe eventos automáticos do BioDoc após valida�
 ```
 Usuário realiza liveness no BioDoc
         ↓
-BioDoc envia POST /webhook/biodoc
+BioDoc envia POST /biodoc
   Authorization: Bearer <BIODOC_WEBHOOK_TOKEN>
   { "reference_Id": "...", "success": true, "url": "...", "status": 2, ... }
         ↓
@@ -251,7 +251,7 @@ Resposta: { "status": "success", "external_id": "...", "defense_sync": "ok" }
 ```bash
 python scripts/test_biodoc_webhook.py
 # Com opções:
-python scripts/test_biodoc_webhook.py --url https://homologa.wolfx.com.br --card 9999999999
+python scripts/test_biodoc_webhook.py --url https://un.wolfx.com.br --card 9999999999
 python scripts/test_biodoc_webhook.py --success false
 ```
 
@@ -282,9 +282,11 @@ docker compose run --rm --no-deps -v "${PWD}:/app" middleware-biodoc-intelbras p
 
 Todo cadastro no Defense é **visitante**. Cada chamada gera uma **nova visita** (não upsert por cartão).
 
+Manual operacional para a equipe: [`docs/MANUAL_CADASTRO_DIRETO_DEFENSE.md`](docs/MANUAL_CADASTRO_DIRETO_DEFENSE.md).
+
 | Fluxo | Destino no Defense | Portas |
 |-------|-------------------|--------|
-| **Webhook BioDoc** (`GET /webhook/biodoc`) | Automático (`local_name` / `reguiredName` / `details.nmLocal` → host visitante) | Automático |
+| **Webhook BioDoc** (`GET /biodoc`) | Automático (`local_name` / `reguiredName` / `details.nmLocal` → host visitante) | Automático |
 | **POST /v1/person/sync** | `defense.org_code` = **nome da regra de acesso** no painel | Automático |
 
 Exemplo de body para sync manual: [`data/test_post_sync.json`](data/test_post_sync.json) — resumo em [`data/test_post_sync.md`](data/test_post_sync.md).

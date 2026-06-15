@@ -36,13 +36,13 @@ def test_format_payload_summary_multiline():
 def test_format_inbound_request_structure():
     text = format_inbound_request(
         method="POST",
-        path="/webhook/biodoc",
+        path="/biodoc",
         client="52.5.95.105",
         query="",
         headers={"content-type": "application/json", "user-agent": "Go-http-client/2.0"},
         body_preview='{"success":true,"card":"123"}',
     )
-    assert "POST /webhook/biodoc ← 52.5.95.105" in text
+    assert "POST /biodoc ← 52.5.95.105" in text
     assert "query: (empty)" in text
     assert "headers:" in text
     assert "body:" in text

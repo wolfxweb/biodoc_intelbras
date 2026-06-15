@@ -1,4 +1,4 @@
-"""GET/POST /webhook/biodoc — callback BioDoc (url=) e ingress Intelbras (log)."""
+"""GET/POST /biodoc — callback BioDoc (url=) e ingress Intelbras (log)."""
 
 from typing import Annotated
 
@@ -13,7 +13,6 @@ from src.services.defense_callback_service import process_defense_biodoc_callbac
 from src.services.defense_ia_client import DefenseIAClient
 
 router = APIRouter(
-    prefix="/webhook",
     tags=["webhook"],
 )
 

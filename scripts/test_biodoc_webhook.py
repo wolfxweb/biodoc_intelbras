@@ -3,7 +3,7 @@ Simula o envio de um webhook BioDoc para o middleware local ou de homologação.
 
 Uso:
   python scripts/test_biodoc_webhook.py
-  python scripts/test_biodoc_webhook.py --middleware-url https://homologa.wolfx.com.br
+  python scripts/test_biodoc_webhook.py --middleware-url https://un.wolfx.com.br
   python scripts/test_biodoc_webhook.py --success false
   python scripts/test_biodoc_webhook.py --reference-id <uuid-da-interacao>
 
@@ -86,7 +86,7 @@ def main() -> None:
         print("  Adicione: BIODOC_WEBHOOK_TOKEN=<mesmo token configurado no painel BioDoc>")
         sys.exit(1)
 
-    endpoint = f"{args.middleware_url.rstrip('/')}/webhook/biodoc"
+    endpoint = f"{args.middleware_url.rstrip('/')}/biodoc"
     success = args.success == "true"
     payload = {
         "id_Log": args.id_log,

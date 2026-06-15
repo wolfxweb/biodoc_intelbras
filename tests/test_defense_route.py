@@ -51,13 +51,13 @@ async def test_webhook_biodoc_post_logs_payload_and_returns_ok(
     payload = {"event": "access", "deviceId": "cam-01", "personId": "12345"}
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post("/webhook/biodoc", json=payload)
+        response = await client.post("/biodoc", json=payload)
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
     inbound = [r.message for r in caplog.records if "[WEBHOOK IN]" in r.message]
-    assert any("POST /webhook/biodoc" in m for m in inbound)
+    assert any("POST /biodoc" in m for m in inbound)
     assert any("deviceId" in m for m in inbound)
     assert any("HTTP 200" in m for m in inbound)
 
@@ -113,7 +113,7 @@ async def test_defense_get_runs_external_audits_and_syncs_defense(
         ) as download_mock:
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/webhook/biodoc",
+                    "/biodoc",
                     params={
                         "card": "00271368992672000",
                         "date": "30/05/2026 16:48:14",
@@ -174,7 +174,7 @@ async def test_defense_get_uses_details_operador_from_query(
         ):
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/webhook/biodoc",
+                    "/biodoc",
                     params={
                         "card": "00271368992672000",
                         "date": "09/06/2026 14:25:41",
@@ -223,7 +223,7 @@ async def test_defense_get_malformed_biodoc_query_still_reads_card(
         ):
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/webhook/biodoc?org_code=VIVER?card=00271368992672000&response=200"
+                    "/biodoc?org_code=VIVER?card=00271368992672000&response=200"
                 )
     finally:
         app.dependency_overrides.clear()
@@ -260,7 +260,7 @@ async def test_defense_get_org_code_in_url_skips_external_audits(
         ):
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/webhook/biodoc",
+                    "/biodoc",
                     params={
                         "card": "00271368992672000",
                         "date": "09/06/2026 15:15:49",
@@ -277,6 +277,83 @@ async def test_defense_get_org_code_in_url_skips_external_audits(
     call_args = defense_mock.sync_visitor.await_args
     assert call_args is not None
     assert call_args[0][1] == "VIVER"
+
+
+@pytest.mark.asyncio
+async def test_defense_get_org_code_uses_external_audits_when_mainimage_missing(
+    caplog: pytest.LogCaptureFixture,
+):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="biodoc_intelbras")
+
+    defense_mock = _make_defense_mock()
+    biodoc_mock = AsyncMock(spec=BiodocClient)
+    biodoc_mock.get_card_mainimage.return_value = CardMainImageData(
+        name=MOCK_USER_NAME,
+        card="00271368992672000",
+        status=True,
+        image=None,
+    )
+    biodoc_mock.get_external_audits.return_value = [
+        ExternalAuditEntry(
+            id="d0b22da4-8ebb-4426-bff9-a8ed03bd2876",
+            id_card="00271368992672000",
+            name=MOCK_USER_NAME,
+            status="7",
+            date="2026-06-15T18:28:15Z",
+            required=28,
+            required_name=None,
+            description=None,
+        )
+    ]
+    biodoc_mock.get_integration_log.return_value = IntegrationLogData(
+        id="d0b22da4-8ebb-4426-bff9-a8ed03bd2876",
+        id_card="00271368992672000",
+        name=MOCK_USER_NAME,
+        status=7,
+        main_image="https://example.com/verify-capture.jpg",
+        path=None,
+        required_name=None,
+        operador="OUTRA_PORTA",
+        local_name=None,
+        local_source=None,
+    )
+    app.dependency_overrides[get_defense_client] = lambda: defense_mock
+    app.dependency_overrides[get_biodoc_client] = lambda: biodoc_mock
+
+    transport = ASGITransport(app=app)
+    try:
+        with patch(
+            "src.services.biodoc_webhook_service.download_image_as_base64",
+            new=AsyncMock(return_value=__import__("base64").b64encode(_DUMMY_JPEG).decode()),
+        ) as download_mock:
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get(
+                    "/biodoc",
+                    params={
+                        "card": "00271368992672000",
+                        "date": "15/06/2026 18:28:15",
+                        "response": "201",
+                        "org_code": "VIVER",
+                    },
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    biodoc_mock.get_external_audits.assert_awaited_once()
+    biodoc_mock.get_integration_log.assert_awaited_once_with(
+        "d0b22da4-8ebb-4426-bff9-a8ed03bd2876"
+    )
+    download_mock.assert_awaited_once_with("https://example.com/verify-capture.jpg")
+    defense_mock.sync_visitor.assert_awaited_once()
+    call_args = defense_mock.sync_visitor.await_args
+    assert call_args is not None
+    assert call_args[0][1] == "VIVER"
+    messages = [r.message for r in caplog.records]
+    assert any("mainimage ausente" in m for m in messages)
+    assert any("imagem resolvida" in m for m in messages)
 
 
 @pytest.mark.asyncio
@@ -306,7 +383,7 @@ async def test_defense_get_operador_in_url_skips_external_audits(
         ):
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/webhook/biodoc",
+                    "/biodoc",
                     params={
                         "card": "00271368992672000",
                         "date": "09/06/2026 15:15:49",
@@ -366,7 +443,7 @@ async def test_defense_get_uses_reference_id_for_detail_operador(
         ):
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/webhook/biodoc",
+                    "/biodoc",
                     params={
                         "card": "00271368992672000",
                         "date": "09/06/2026 14:53:02",
@@ -395,7 +472,7 @@ async def test_defense_get_failed_response_skips_sync():
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
-                "/webhook/biodoc",
+                "/biodoc",
                 params={"card": "123", "response": "500"},
             )
     finally:

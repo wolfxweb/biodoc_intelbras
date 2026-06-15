@@ -519,11 +519,22 @@ async def process_biodoc_webhook_by_card(
                 reference_id,
             )
     elif details_operador_hint:
-        logger.info(
-            "[WEBHOOK] %s operador na URL (%r) — external-audits ignorado",
-            ref_label,
-            details_operador_hint,
-        )
+        if card_data.image:
+            logger.info(
+                "[WEBHOOK] %s operador na URL (%r) — external-audits ignorado",
+                ref_label,
+                details_operador_hint,
+            )
+        else:
+            logger.info(
+                "[WEBHOOK] %s operador na URL (%r), mainimage ausente — "
+                "buscando external-audits para imagem",
+                ref_label,
+                details_operador_hint,
+            )
+            audit_log, audit_required_name = await _resolve_log_via_external_audits(
+                card, event_date, biodoc_client
+            )
     else:
         audit_log, audit_required_name = await _resolve_log_via_external_audits(
             card, event_date, biodoc_client

@@ -1,17 +1,32 @@
-# URL de teste BioDoc Verify — troque ORG_CODE pelo nome da regra/porta no Defense
-# Exemplos: VIVER | Colaboradores | CHU - CENTRAL
+# URL de teste BioDoc Verify — PADRÃO OFICIAL
+# Guia completo: docs/VERIFY_URL_ORG_CODE.md
+# Regra rápida (%3D, %20): docs/REGRA_ENCODING_ORG_CODE.md
 #
-# IMPORTANTE: use org_code na query da verify (antes do url=), NÃO dentro do url=
-# com "?" — o BioDoc quebra o redirect e o card some.
+# Estrutura fixa (troque só NOME_DA_PORTA em 2 lugares):
+#   details → {"operador":"NOME_DA_PORTA"}
+#   url     → biodoc%3Forg_code%3DNOME_DA_PORTA
 #
-# Copie a linha abaixo (sem #) no navegador:
+# NOME_DA_PORTA = nome exato da regra de acesso no Defense
+# Exemplos: VIVER | Oncologia | Colaboradores | CHU - CENTRAL
+#
+# Encoding: %3F = ?   %3D = =
+# Callback decodificado: https://un.wolfx.com.br/biodoc?org_code=NOME_DA_PORTA
+#
+# Redirect após verify (normal — BioDoc usa ? em vez de &):
+#   .../biodoc?org_code=VIVER?card=...&response=200
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22ORG_CODE%22%7D&org_code=ORG_CODE&url=https://homologa.wolfx.com.br/webhook/biodoc
+# Template — substitua NOME_DA_PORTA:
 
-# Exemplo pronto (VIVER):
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22NOME_DA_PORTA%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DNOME_DA_PORTA
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&org_code=VIVER&url=https://homologa.wolfx.com.br/webhook/biodoc
+# Exemplo VIVER (referência):
 
-# Alternativa (url= com org_code encoded — se precisar fixar só no callback):
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DVIVER
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc%3Forg_code%3DVIVER
+# Exemplo Oncologia:
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22Oncologia%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DOncologia
+
+# Exemplo nome composto (CHU - CENTRAL — espaços viram %20):
+
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22CHU%20-%20CENTRAL%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DCHU%20-%20CENTRAL

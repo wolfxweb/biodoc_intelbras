@@ -20,7 +20,7 @@ Exemplos de nomes válidos: `CHU - CENTRAL`, `Refeitorio`, `BLOCO A` — **igual
 
 ---
 
-## Webhook BioDoc (`GET /webhook/biodoc`)
+## Webhook BioDoc (`GET /biodoc`)
 
 Fluxo automático via `local_name` / `reguiredName` / `details.nmLocal` do BioDoc. Ver [`ARCHITECTURE.md`](ARCHITECTURE.md).
 

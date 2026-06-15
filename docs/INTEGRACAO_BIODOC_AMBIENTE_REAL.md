@@ -11,7 +11,7 @@ Existem **três sistemas** e **duas direções** de comunicação:
 ```
 ┌─────────────┐     webhook POST      ┌──────────────────┐     API BRMS      ┌──────────────┐
 │   BioDoc    │ ────────────────────► │    Middleware    │ ────────────────► │ Defense IA   │
-│  (nuvem)    │   /webhook/biodoc     │  (sua API)       │   upsert pessoa   │  (on-prem)   │
+│  (nuvem)    │   /biodoc     │  (sua API)       │   upsert pessoa   │  (on-prem)   │
 └─────────────┘                       └────────┬─────────┘                   └──────────────┘
        ▲                                       │
        │         GET mainimage (TOKEN_API)     │
@@ -48,7 +48,7 @@ O middleware **não** substitui o painel BioDoc: ele só recebe o evento e sincr
 
 ### Infraestrutura do middleware
 
-- URL **HTTPS pública** (recomendado) para o BioDoc chamar o webhook — ex.: `https://homologa.wolfx.com.br`
+- URL **HTTPS pública** (recomendado) para o BioDoc chamar o webhook — ex.: `https://un.wolfx.com.br`
 - O middleware precisa conseguir:
   - **Saída HTTPS** para `BIODOC_API_URL` (consulta de beneficiário)
   - **Saída HTTP(S)** para `DEFENSE_IA_SERVER_URL`
@@ -102,7 +102,7 @@ Demais variáveis Defense: ver `.env.example` e `README.md`.
 
 | Variável | Uso |
 |----------|-----|
-| `MIDDLEWARE_URL` | Base usada pelos scripts de teste (ex.: `https://homologa.wolfx.com.br`) |
+| `MIDDLEWARE_URL` | Base usada pelos scripts de teste (ex.: `https://un.wolfx.com.br`) |
 | `ADMIN_API_TOKEN` | Rotas admin e bootstrap da source `biodoc` |
 
 **Não commitar** o arquivo `.env` (contém senhas e tokens).
@@ -129,7 +129,7 @@ DEFENSE_IA_PASSWORD=***
 DEFENSE_IA_PUBLIC_KEY=***
 # ...
 
-MIDDLEWARE_URL=https://homologa.wolfx.com.br
+MIDDLEWARE_URL=https://un.wolfx.com.br
 ```
 
 Gere um `BIODOC_WEBHOOK_TOKEN` forte (ex.: 32+ caracteres aleatórios). Esse valor deve ser **idêntico** no `.env` e no painel BioDoc.
@@ -147,7 +147,7 @@ curl -s http://localhost:8000/status | jq
 **Docker Swarm (homologação Wolfx):**
 
 - Stack: `docker-compose.swarm.yml`
-- Host Traefik: `homologa.wolfx.com.br` → porta 8000 do serviço
+- Host Traefik: `un.wolfx.com.br` → porta 8000 do serviço
 - `env_file`: `/root/biodoc_intelbras/.env`
 
 Confirme no `/status`:
@@ -176,15 +176,15 @@ No painel BioDoc (área de integração / webhook):
 
 | Campo no BioDoc | Valor |
 |-----------------|--------|
-| **URL do WebHook** | `https://<seu-dominio>/webhook/biodoc` |
+| **URL do WebHook** | `https://<seu-dominio>/biodoc` |
 | **Token / Authorization** | Mesmo valor de `BIODOC_WEBHOOK_TOKEN` |
 
 Exemplos de URL:
 
 | Ambiente | URL típica |
 |----------|------------|
-| Homolog Wolfx | `https://homologa.wolfx.com.br/webhook/biodoc` |
-| Local (só teste interno) | `http://IP:8000/webhook/biodoc` — **o BioDoc na nuvem normalmente não alcança localhost** |
+| Homolog Wolfx | `https://un.wolfx.com.br/biodoc` |
+| Local (só teste interno) | `http://IP:8000/biodoc` — **o BioDoc na nuvem normalmente não alcança localhost** |
 
 O middleware resolve o local via `GET /integrations/log/{reference_Id}` usando
 **`reguiredName`** (campo oficial da API BioDoc) e, em fallback, campos do
@@ -210,13 +210,13 @@ details={"operador":"VIVER","nmLocal":"CHU - ESPAÇO VIVER BEM"}
 Se external-audits ou integrations/log falhar, o sync continua com `orgCode` fallback (`001`).
 
 Alternativa preferencial (quando o BioDoc inclui o ID no callback): use callback **`url`** (redirect)
-em vez de `urlWebhook`, apontando para `/webhook/biodoc/redirect` — o BioDoc
+em vez de `urlWebhook`, apontando para `/biodoc/redirect` — o BioDoc
 inclui `reference_Id` na query do redirect e o fluxo `integrations/log` funciona direto.
 
 Exemplo de URL verify (sandbox, Colaboradores, **sem** parâmetros no webhook):
 
 ```
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22colaboradores%22%7D&url=https://homologa.wolfx.com.br/webhook/biodoc/redirect
+https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22colaboradores%22%7D&url=https://un.wolfx.com.br/biodoc/redirect
 ```
 
 **Redirecionamento para portal Unimed após sync no Defense**
@@ -231,15 +231,15 @@ https://web.sandbox.biodoc.com.br/#/integration/verify
   ?card=00271368992672000
   &token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==
   &details={"operador":"VIVER","returnUrl":"https://unimed.me/027/validacao"}
-  &url=https://homologa.wolfx.com.br/webhook/biodoc/redirect
+  &url=https://un.wolfx.com.br/biodoc/redirect
 ```
 
-Fluxo: BioDoc redirect → `GET /webhook/biodoc/redirect` → sync Defense → `302`
+Fluxo: BioDoc redirect → `GET /biodoc/redirect` → sync Defense → `302`
 para `returnUrl`. Se o sync falhar, o usuário vê página de erro (sem redirect).
 Remova `urlWebhook` desta URL para evitar sync duplicado (o upsert no Defense é
 idempotente, mas o redirect só garante ordem correta no fluxo via `url`).
 
-Alternativa equivalente: `url=https://homologa.wolfx.com.br/webhook/biodoc` (rota
+Alternativa equivalente: `url=https://un.wolfx.com.br/biodoc` (rota
 intermediária `/webhook/sucesso` com o mesmo `returnUrl` em `details`).
 
 Ou, se precisar manter urlWebhook, peça ao suporte BioDoc para incluir `logId` no
@@ -248,8 +248,8 @@ body do POST (junto com `card` e `image`).
 Exemplos de URL do webhook (sem query):
 
 ```http
-POST /webhook/biodoc HTTP/1.1
-Host: homologa.wolfx.com.br
+POST /biodoc HTTP/1.1
+Host: un.wolfx.com.br
 Authorization: Bearer <BIODOC_WEBHOOK_TOKEN>
 Content-Type: application/json
 ```
@@ -355,7 +355,7 @@ Com `BIODOC_WEBHOOK_TOKEN` no `.env`:
 
 ```bash
 python3 scripts/test_biodoc_webhook.py \
-  --url https://homologa.wolfx.com.br \
+  --url https://un.wolfx.com.br \
   --card <cartao_real_no_sandbox>
 ```
 

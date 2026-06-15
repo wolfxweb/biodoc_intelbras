@@ -1,5 +1,5 @@
 """
-Envia POST /webhook/biodoc e grava no Defense IA REAL.
+Envia POST /biodoc e grava no Defense IA REAL.
 
 - BioDoc API: mock (nome/foto/status fictícios)
 - Download imagem: mock (data/test_face.jpg em base64)
@@ -102,7 +102,7 @@ async def main() -> int:
     headers = {"Authorization": f"Bearer {token}"}
 
     print("=" * 60)
-    print("ENVIO REAL: POST /webhook/biodoc → Defense IA (ACS person)")
+    print("ENVIO REAL: POST /biodoc → Defense IA (ACS person)")
     print("=" * 60)
     print(f"card/personId: {args.card}")
     print(f"reference_Id: {args.reference_id}")
@@ -125,7 +125,7 @@ async def main() -> int:
                     base_url="http://testserver",
                 ) as client:
                     response = await client.post(
-                        "/webhook/biodoc", json=payload, headers=headers
+                        "/biodoc", json=payload, headers=headers
                     )
 
                 print(f"HTTP {response.status_code}")

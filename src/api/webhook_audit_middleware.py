@@ -1,4 +1,4 @@
-"""Auditoria de ingress: GET/POST /webhook/biodoc."""
+"""Auditoria de ingress: GET/POST /biodoc."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ _SENSITIVE_QUERY = re.compile(
     r"(?i)(^|&)(token|authorization|access_token|api_key)=([^&]*)"
 )
 
-_WEBHOOK_PATH = "/webhook/biodoc"
+_WEBHOOK_PATH = "/biodoc"
 _LOG_TAG = "[WEBHOOK IN]"
 
 
@@ -67,7 +67,7 @@ def _should_audit_request(path: str, method: str) -> bool:
 
 
 class WebhookAuditMiddleware(BaseHTTPMiddleware):
-    """Grava hits em GET/POST /webhook/biodoc."""
+    """Grava hits em GET/POST /biodoc."""
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path

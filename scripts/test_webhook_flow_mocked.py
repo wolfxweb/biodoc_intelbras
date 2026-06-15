@@ -130,12 +130,12 @@ async def run_flow(args: argparse.Namespace) -> int:
     headers = {"Authorization": f"Bearer {webhook_token}"}
 
     print("=" * 60)
-    print("Teste mockado: POST /webhook/biodoc → Defense sync_person (ACS person)")
+    print("Teste mockado: POST /biodoc → Defense sync_person (ACS person)")
     print("=" * 60)
     print(f"Card: {card} | reference_Id: {reference_id} | id_Log: {args.id_log} | Nome mock BioDoc: {args.name}")
     print("(BioDoc API e Defense IA reais NÃO são chamados)")
 
-    _step(1, "POST /webhook/biodoc", json.dumps(payload, ensure_ascii=False)[:120] + "...")
+    _step(1, "POST /biodoc", json.dumps(payload, ensure_ascii=False)[:120] + "...")
 
     transport = httpx.ASGITransport(app=app)
     try:
@@ -147,7 +147,7 @@ async def run_flow(args: argparse.Namespace) -> int:
                 transport=transport,
                 base_url="http://testserver",
             ) as client:
-                response = await client.post("/webhook/biodoc", json=payload, headers=headers)
+                response = await client.post("/biodoc", json=payload, headers=headers)
     finally:
         app.dependency_overrides.clear()
 

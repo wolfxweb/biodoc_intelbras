@@ -73,7 +73,7 @@ def operador_from_callback_query(
     2. Parâmetros diretos: org_code, operador, local, local_de_acesso, acesso
 
     Exemplo na URL verify (parâmetro url=):
-    https://homologa.wolfx.com.br/webhook/biodoc?org_code=VIVER
+    https://un.wolfx.com.br/biodoc?org_code=VIVER
     """
     for raw in (details, detail):
         value = _operador_from_details_raw(raw)

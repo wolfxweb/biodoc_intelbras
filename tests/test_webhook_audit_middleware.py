@@ -20,11 +20,11 @@ async def test_webhook_audit_logs_post_biodoc_ingress(
     payload = {"event": "access", "deviceId": "cam-01"}
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post("/webhook/biodoc", json=payload)
+        response = await client.post("/biodoc", json=payload)
 
     assert response.status_code == 200
     inbound = [r.message for r in caplog.records if "[WEBHOOK IN]" in r.message]
-    assert any("POST /webhook/biodoc" in m for m in inbound)
+    assert any("POST /biodoc" in m for m in inbound)
     assert any("body:" in m for m in inbound)
 
 
@@ -56,7 +56,7 @@ async def test_webhook_audit_logs_get_biodoc_callback(
         ):
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
-                    "/webhook/biodoc",
+                    "/biodoc",
                     params={"card": "123", "response": "403"},
                 )
     finally:
@@ -64,5 +64,5 @@ async def test_webhook_audit_logs_get_biodoc_callback(
 
     assert response.status_code == 200
     inbound = [r.message for r in caplog.records if "[WEBHOOK IN]" in r.message]
-    assert any("GET /webhook/biodoc" in m for m in inbound)
+    assert any("GET /biodoc" in m for m in inbound)
     assert any("HTTP 200" in m for m in inbound)
