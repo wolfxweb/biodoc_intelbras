@@ -1,32 +1,46 @@
-# URL de teste BioDoc Verify — PADRÃO OFICIAL
+# URL BioDoc Verify — PRODUÇÃO
 # Guia completo: docs/VERIFY_URL_ORG_CODE.md
 # Regra rápida (%3D, %20): docs/REGRA_ENCODING_ORG_CODE.md
 #
-# Estrutura fixa (troque só NOME_DA_PORTA em 2 lugares):
-#   details → {"operador":"NOME_DA_PORTA"}
-#   url     → biodoc%3Forg_code%3DNOME_DA_PORTA
+# Ambiente: APENAS produção (sandbox/homologação desativados)
+#
+# Estrutura fixa (troque só NOME_DA_PORTA):
+#   Host     → web.biodoc.com.br
+#   token    → TOKEN_API do painel BioDoc produção
+#   card     → 00271368992672000
+#   details  → {"operador":"NOME_DA_PORTA"}
+#   url      → biodoc%3Forg_code%3DNOME_DA_PORTA
 #
 # NOME_DA_PORTA = nome exato da regra de acesso no Defense
-# Exemplos: VIVER | Oncologia | Colaboradores | CHU - CENTRAL
+# Exemplos: EVB | VIVER | Oncologia | Colaboradores | CHU - CENTRAL
 #
-# Encoding: %3F = ?   %3D = =
+# Encoding: %3F = ?   %3D = =   %20 = espaço
 # Callback decodificado: https://un.wolfx.com.br/biodoc?org_code=NOME_DA_PORTA
 #
 # Redirect após verify (normal — BioDoc usa ? em vez de &):
-#   .../biodoc?org_code=VIVER?card=...&response=200
+#   .../biodoc?org_code=EVB?card=...&response=200
+#
+# NÃO usar:
+#   web.sandbox.biodoc.com.br  (host sandbox — usar web.biodoc.com.br)
+#   homologa.wolfx.com.br      (homologação desativada)
+#   token sandbox UG5iZndNeWlV... (usar token produção abaixo)
 
-# Template — substitua NOME_DA_PORTA:
+# Template — substitua só NOME_DA_PORTA (card fixo 00271368992672000):
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22NOME_DA_PORTA%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DNOME_DA_PORTA
+https://web.biodoc.com.br/#/integration/verify?card=00271368992672000&token=dWh6RWx5bDlSOU82ZHpVNUlRTFNnKzAzL1RHMHZzRFU3Wk93aktZanVDaFVNSXBSWG5HR3FYczNBekxoMnBYcw==&details={%22operador%22:%22NOME_DA_PORTA%22}&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DNOME_DA_PORTA
 
-# Exemplo VIVER (referência):
+# Exemplo EVB:
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22VIVER%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DVIVER
+https://web.biodoc.com.br/#/integration/verify?card=00271368992672000&token=dWh6RWx5bDlSOU82ZHpVNUlRTFNnKzAzL1RHMHZzRFU3Wk93aktZanVDaFVNSXBSWG5HR3FYczNBekxoMnBYcw==&details={%22operador%22:%22EVB%22}&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DEVB
+
+# Exemplo VIVER:
+
+https://web.biodoc.com.br/#/integration/verify?card=00271368992672000&token=dWh6RWx5bDlSOU82ZHpVNUlRTFNnKzAzL1RHMHZzRFU3Wk93aktZanVDaFVNSXBSWG5HR3FYczNBekxoMnBYcw==&details={%22operador%22:%22VIVER%22}&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DVIVER
 
 # Exemplo Oncologia:
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22Oncologia%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DOncologia
+https://web.biodoc.com.br/#/integration/verify?card=00271368992672000&token=dWh6RWx5bDlSOU82ZHpVNUlRTFNnKzAzL1RHMHZzRFU3Wk93aktZanVDaFVNSXBSWG5HR3FYczNBekxoMnBYcw==&details={%22operador%22:%22Oncologia%22}&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DOncologia
 
-# Exemplo nome composto (CHU - CENTRAL — espaços viram %20):
+# Exemplo nome composto — CHU - CENTRAL (espaços viram %20 no details e no url=):
 
-https://web.sandbox.biodoc.com.br/#/integration/verify?card=00271368992672000&token=UG5iZndNeWlVZWxRYmMxWExXaUNFL3cya0VwWEQ1emZqMjNaS05lendpVlkzTGRqaG45RDVLLzl4RTZZTFNJeA==&details=%7B%22operador%22%3A%22CHU%20-%20CENTRAL%22%7D&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DCHU%20-%20CENTRAL
+https://web.biodoc.com.br/#/integration/verify?card=00271368992672000&token=dWh6RWx5bDlSOU82ZHpVNUlRTFNnKzAzL1RHMHZzRFU3Wk93aktZanVDaFVNSXBSWG5HR3FYczNBekxoMnBYcw==&details={%22operador%22:%22CHU%20-%20CENTRAL%22}&url=https://un.wolfx.com.br/biodoc%3Forg_code%3DCHU%20-%20CENTRAL
