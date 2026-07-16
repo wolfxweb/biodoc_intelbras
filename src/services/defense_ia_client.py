@@ -1830,6 +1830,10 @@ class DefenseIAClient:
                     msg = f"Defense IA retornou código {code}: {desc}{extra}".strip()
                     if code in (8044, "8044"):
                         raise DefenseIAArgumentError(msg)
+                    if code in FACE_SIZE_LIMIT_CODES or _looks_like_face_size_limit(
+                        f"{code} {desc}"
+                    ):
+                        raise DefenseIAArgumentError(FACE_SIZE_LIMIT_PUBLIC_DETAIL)
                     raise DefenseIAError(msg)
         if response.status_code == 401:
             raise DefenseIAUnauthorizedError("Token do Defense IA recusado")
@@ -1867,7 +1871,29 @@ def extract_token(payload: dict[str, Any]) -> str:
     raise DefenseIAError("Defense IA authorize não retornou token")
 
 
+FACE_SIZE_LIMIT_CODES = (8079, "8079")
+FACE_SIZE_LIMIT_PUBLIC_DETAIL = (
+    "Foto facial excede o limite do Defense IA (máximo 100 KB). "
+    "Comprima a imagem (preferencialmente JPEG) e envie novamente."
+)
+
+
+def _looks_like_face_size_limit(text: str) -> bool:
+    lowered = text.casefold()
+    return (
+        "8079" in lowered
+        or "face size over limit" in lowered
+        or "person face size" in lowered
+    )
+
+
+def is_face_size_limit_error(exc: BaseException) -> bool:
+    return _looks_like_face_size_limit(str(exc))
+
+
 def defense_error_detail_public(exc: DefenseIAError) -> str:
+    if is_face_size_limit_error(exc):
+        return FACE_SIZE_LIMIT_PUBLIC_DETAIL
     if os.getenv("DEFENSE_IA_EXPOSE_ERROR", "false").lower() in ("1", "true", "yes"):
         return str(exc)
     return "API do Defense IA indisponível"

@@ -3,9 +3,17 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
 from src.api.schemas import SyncRequest
-from src.services.defense_ia_client import DefenseIAClient, DefenseIASettings
+from src.services.defense_ia_client import (
+    FACE_SIZE_LIMIT_PUBLIC_DETAIL,
+    DefenseIAArgumentError,
+    DefenseIAClient,
+    DefenseIAError,
+    DefenseIASettings,
+    defense_error_detail_public,
+)
 from src.services.defense_sync import sync_to_defense
 
 
@@ -77,3 +85,34 @@ async def test_sync_to_defense_visitor_explicit_channels():
         access_rule_name="001021",
         entrance_ids=channels,
     )
+
+
+def test_defense_error_detail_public_maps_face_size_limit():
+    exc = DefenseIAError(
+        "Defense IA retornou código 8079: person face size over limit：100k."
+    )
+    assert defense_error_detail_public(exc) == FACE_SIZE_LIMIT_PUBLIC_DETAIL
+
+
+@pytest.mark.asyncio
+async def test_sync_to_defense_face_size_limit_returns_422():
+    client = DefenseIAClient(
+        settings=DefenseIASettings(
+            server_url="http://defense.test",
+            username="u",
+            password="p",
+            sync_target="visitor",
+        )
+    )
+    client._token = "t"
+    client.sync_visitor = AsyncMock(
+        side_effect=DefenseIAArgumentError(FACE_SIZE_LIMIT_PUBLIC_DETAIL)
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await sync_to_defense(
+            _sync_request(), client, sync_target="visitor", org_code="INT6"
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == FACE_SIZE_LIMIT_PUBLIC_DETAIL

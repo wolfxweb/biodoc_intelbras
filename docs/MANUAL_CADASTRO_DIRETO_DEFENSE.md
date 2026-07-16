@@ -145,6 +145,7 @@ Guarde o `visitor_id` para conferência no módulo de visitantes do Defense.
 | --- | --- | --- |
 | `401` | Token administrativo ausente ou incorreto. | Conferir header `Authorization: Bearer <ADMIN_API_TOKEN>`. |
 | `422` | Payload inválido. | Conferir campos obrigatórios, `external_id` alfanumérico, imagem base64 e `defense.org_code`. |
+| `422` | Foto maior que 100 KB (Defense código `8079`). | Comprimir a imagem (JPEG) para no máximo **100 KB** e reenviar. |
 | `503` | Middleware sem conexão com Defense IA. | Acionar equipe técnica para verificar `/status` e login no Defense. |
 | `502` | Erro retornado pelo Defense IA. | Conferir regra de acesso, dados do visitante e logs do middleware. |
 
@@ -155,7 +156,7 @@ Guarde o `visitor_id` para conferência no módulo de visitantes do Defense.
 - `operation` está como `upsert`.
 - `external_id` tem somente letras e números.
 - `full_name` e `document` estão preenchidos.
-- `face_image_base64` é JPEG/PNG em base64 puro.
+- `face_image_base64` é JPEG/PNG em base64 puro **e a imagem decodificada tem no máximo 100 KB**.
 - `defense.org_code` é o nome exato da regra de acesso no Defense.
 
 ## Observação importante sobre visitas

@@ -16,6 +16,7 @@ from fastapi import HTTPException, status
 from src.api.schemas import SyncRequest
 from src.core.logging import logger
 from src.services.defense_ia_client import (
+    FACE_SIZE_LIMIT_PUBLIC_DETAIL,
     DefenseIAArgumentError,
     DefenseIAClient,
     DefenseIAError,
@@ -23,6 +24,7 @@ from src.services.defense_ia_client import (
     DefenseIAUnavailableError,
     defense_error_detail_public,
     extract_sync_result_ids,
+    is_face_size_limit_error,
 )
 
 
@@ -87,6 +89,17 @@ async def sync_to_defense(
             defense_result = await defense_client.sync_person(sync_request, resolved_org)
     except DefenseIAArgumentError as exc:
         detail = str(exc)
+        if is_face_size_limit_error(exc) or "100 KB" in detail:
+            logger.warning(
+                "%sfoto facial acima do limite Defense IA external_id=%s: %s",
+                prefix,
+                sync_request.external_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=FACE_SIZE_LIMIT_PUBLIC_DETAIL,
+            ) from exc
         if "Host visitante" in detail or "acsChannelId" in detail:
             logger.warning(
                 "%sconfiguração visitante inválida external_id=%s: %s",
