@@ -19,6 +19,9 @@ from src.services.defense_ia_client import (
     DefenseIAError,
     DefenseIASettings,
     DefenseIAArgumentError,
+    _extract_department_channels,
+    _find_device_org_channels,
+    _normalize_org_lookup_key,
     brms_person_path,
     build_auth_signatures,
     extract_face_pictures_from_person_body,
@@ -1068,6 +1071,89 @@ async def test_resolve_channels_by_visited_name_from_visitor_detail():
     assert ids == ["1000045$7$0$0", "1000046$7$0$0"]
 
 
+_NESTED_DEVICE_ORG = [
+    {
+        "name": "CHU - CENTRAL",
+        "code": "001",
+        "channel": [{"id": "1000001$7$0$0"}],
+        "departments": [
+            {
+                "name": "INT5",
+                "code": "001005",
+                "channel": [{"id": "1000005$7$0$0"}],
+                "departments": [
+                    {
+                        "name": "Catraca A",
+                        "code": "001005001",
+                        "channel": [{"id": "1000051$7$0$0"}],
+                    },
+                    {
+                        "name": "Sala B",
+                        "code": "001005002",
+                        "channel": [{"id": "1000052$7$0$0"}],
+                    },
+                ],
+            },
+            {
+                "name": "OutroNivel",
+                "code": "001006",
+                "channel": [{"id": "1000006$7$0$0"}],
+            },
+        ],
+    }
+]
+
+
+def test_extract_department_channels_aggregates_subtree():
+    topo = _NESTED_DEVICE_ORG[0]
+    assert _extract_department_channels(topo) == [
+        "1000001$7$0$0",
+        "1000005$7$0$0",
+        "1000051$7$0$0",
+        "1000052$7$0$0",
+        "1000006$7$0$0",
+    ]
+    int5 = topo["departments"][0]
+    assert _extract_department_channels(int5) == [
+        "1000005$7$0$0",
+        "1000051$7$0$0",
+        "1000052$7$0$0",
+    ]
+    leaf = int5["departments"][0]
+    assert _extract_department_channels(leaf) == ["1000051$7$0$0"]
+
+
+def test_find_device_org_channels_cuts_at_named_level():
+    assert _find_device_org_channels(
+        _NESTED_DEVICE_ORG,
+        org_name_key=_normalize_org_lookup_key("INT5"),
+    ) == [
+        "1000005$7$0$0",
+        "1000051$7$0$0",
+        "1000052$7$0$0",
+    ]
+    assert _find_device_org_channels(
+        _NESTED_DEVICE_ORG,
+        org_name_key=_normalize_org_lookup_key("CHU - CENTRAL"),
+    ) == [
+        "1000001$7$0$0",
+        "1000005$7$0$0",
+        "1000051$7$0$0",
+        "1000052$7$0$0",
+        "1000006$7$0$0",
+    ]
+    assert _find_device_org_channels(
+        _NESTED_DEVICE_ORG,
+        org_name_key=_normalize_org_lookup_key("Sala B"),
+    ) == ["1000052$7$0$0"]
+    # Irmão fora do ramo INT5 não entra no lookup de INT5
+    int5_ids = _find_device_org_channels(
+        _NESTED_DEVICE_ORG,
+        org_code="001005",
+    )
+    assert "1000006$7$0$0" not in int5_ids
+
+
 @pytest.mark.asyncio
 async def test_resolve_visitor_entrance_ids_uses_device_org_when_access_group_404():
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -1086,6 +1172,13 @@ async def test_resolve_visitor_entrance_ids_uses_device_org_when_access_group_40
                                 "channel": [
                                     {"id": "1000071$7$0$0"},
                                     {"id": "1000072$7$0$0"},
+                                ],
+                                "departments": [
+                                    {
+                                        "name": "Refeitorio Norte",
+                                        "code": "001003001",
+                                        "channel": [{"id": "1000073$7$0$0"}],
+                                    }
                                 ],
                             }
                         ]
@@ -1120,7 +1213,38 @@ async def test_resolve_visitor_entrance_ids_uses_device_org_when_access_group_40
     finally:
         await client.close()
         await http_client.aclose()
-    assert ids == ["1000071$7$0$0", "1000072$7$0$0"]
+    assert ids == ["1000071$7$0$0", "1000072$7$0$0", "1000073$7$0$0"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_visitor_entrance_ids_expands_int5_subtree():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/obms/api/v1.1/acs/access-group/list":
+            return httpx.Response(404)
+        if request.url.path == BRMS_DEVICE_ORG_TREE:
+            return httpx.Response(
+                200,
+                json={"code": 1000, "data": {"departments": _NESTED_DEVICE_ORG}},
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    client._token = "token"
+    try:
+        ids = await client.resolve_visitor_entrance_ids(
+            access_rule_name="INT5",
+            visited_name="INT5",
+        )
+    finally:
+        await client.close()
+        await http_client.aclose()
+    assert ids == [
+        "1000005$7$0$0",
+        "1000051$7$0$0",
+        "1000052$7$0$0",
+    ]
+    assert "1000006$7$0$0" not in ids
 
 
 @pytest.mark.asyncio

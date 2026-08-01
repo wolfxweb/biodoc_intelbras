@@ -225,10 +225,30 @@ def _parse_org_code_to_name(body: object) -> dict[str, str]:
 
 
 def _extract_department_channels(department: dict[str, Any]) -> list[str]:
+    """Coleta channel IDs do nó e de todos os descendentes (fluxo até as folhas).
+
+    Deduplica preservando a ordem de visita (nó atual, depois filhos).
+    """
+    seen: set[str] = set()
     channels: list[str] = []
-    for item in department.get("channel") or []:
-        if isinstance(item, dict) and item.get("id"):
-            channels.append(str(item["id"]).strip())
+
+    def _walk(node: dict[str, Any]) -> None:
+        for item in node.get("channel") or []:
+            if not isinstance(item, dict):
+                continue
+            channel_id = str(item.get("id") or "").strip()
+            if not channel_id or channel_id in seen:
+                continue
+            seen.add(channel_id)
+            channels.append(channel_id)
+        sub = node.get("departments") or node.get("deparments") or []
+        if not isinstance(sub, list):
+            return
+        for child in sub:
+            if isinstance(child, dict):
+                _walk(child)
+
+    _walk(department)
     return channels
 
 

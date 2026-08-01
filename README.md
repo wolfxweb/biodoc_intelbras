@@ -287,9 +287,9 @@ Manual operacional para a equipe: [`docs/MANUAL_CADASTRO_DIRETO_DEFENSE.md`](doc
 | Fluxo | Destino no Defense | Portas |
 |-------|-------------------|--------|
 | **Webhook BioDoc** (`GET /biodoc`) | Automático (`local_name` / `reguiredName` / `details.nmLocal` → host visitante) | Automático |
-| **POST /v1/person/sync** | `defense.org_code` = **nome da regra de acesso** no painel | Automático |
+| **POST /v1/person/sync** | `defense.org_code` = **nível da árvore** (ex.: `INT5`) | Todos os dispositivos do ramo (nó → folhas) |
 
-Exemplo de body para sync manual: [`data/test_post_sync.json`](data/test_post_sync.json) — resumo em [`data/test_post_sync.md`](data/test_post_sync.md).
+Exemplo de body para sync manual: [`data/test_post_sync.json`](data/test_post_sync.json) — resumo em [`data/test_post_sync.md`](data/test_post_sync.md). Qualquer nível válido em `org_code` libera o fluxo daquele ponto até as folhas; ver [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md).
 
 Testes:
 

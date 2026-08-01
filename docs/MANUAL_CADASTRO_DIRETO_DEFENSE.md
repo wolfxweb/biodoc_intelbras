@@ -38,7 +38,7 @@ O valor de `<ADMIN_API_TOKEN>` é fornecido pela equipe técnica responsável. N
     "face_image_base64": "/9j/4AAQSkZJRgABAQ..."
   },
   "defense": {
-    "org_code": "VIVER"
+    "org_code": "INT5"
   }
 }
 ```
@@ -53,7 +53,7 @@ O valor de `<ADMIN_API_TOKEN>` é fornecido pela equipe técnica responsável. N
 | `person.full_name` | Sim | Nome completo do visitante. |
 | `person.document` | Sim | CPF, RG ou outro documento. |
 | `biometrics.face_image_base64` | Sim | Foto facial em base64, JPEG ou PNG, sem `data:image/...`. Mínimo de 1 KB após decodificar. |
-| `defense.org_code` | Sim | Nome da regra de acesso no painel Intelbras Defense, por exemplo `VIVER`, `CHU - CENTRAL` ou `Oncologia`. |
+| `defense.org_code` | Sim | Nível da árvore de dispositivos (ou regra de acesso) no Defense. Ex.: `INT5`, `VIVER`, `CHU - CENTRAL`. Libera **todos os dispositivos** daquele nó até as folhas do ramo. |
 
 ## Como preparar a imagem
 
@@ -96,7 +96,7 @@ curl -X POST "https://un.wolfx.com.br/v1/person/sync" \
       "face_image_base64": "/9j/4AAQSkZJRgABAQ..."
     },
     "defense": {
-      "org_code": "VIVER"
+      "org_code": "INT5"
     }
   }'
 ```
@@ -121,7 +121,7 @@ curl -X POST "https://un.wolfx.com.br/v1/person/sync" \
       \"face_image_base64\": \"$IMG_BASE64\"
     },
     \"defense\": {
-      \"org_code\": \"VIVER\"
+      \"org_code\": \"INT5\"
     }
   }"
 ```
@@ -157,7 +157,7 @@ Guarde o `visitor_id` para conferência no módulo de visitantes do Defense.
 - `external_id` tem somente letras e números.
 - `full_name` e `document` estão preenchidos.
 - `face_image_base64` é JPEG/PNG em base64 puro **e a imagem decodificada tem no máximo 100 KB**.
-- `defense.org_code` é o nome exato da regra de acesso no Defense.
+- `defense.org_code` é o nível da árvore (ex.: `INT5`) e libera todos os dispositivos desse fluxo.
 
 ## Observação importante sobre visitas
 

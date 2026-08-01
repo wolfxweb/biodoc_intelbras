@@ -8,27 +8,41 @@ O middleware registra **sempre visitante** no Intelbras Defense.
 
 ## POST `/v1/person/sync`
 
-Informe em **`defense.org_code`** o **nome da regra de acesso** cadastrada no painel Defense (Autorização → Regra de acesso):
+Informe em **`defense.org_code`** o **nível da árvore de dispositivos** (ou regra de acesso) no Defense. Qualquer nível válido funciona:
 
 ```json
 "defense": {
-  "org_code": "CHU - CENTRAL"
+  "org_code": "INT5"
 }
 ```
 
-Exemplos de nomes válidos: `CHU - CENTRAL`, `Refeitorio`, `BLOCO A` — **igual ao painel**.
+Exemplos: `INT5`, `CDI`, `CHU - CENTRAL`, `Refeitorio` — **igual ao painel**.
+
+### Semântica do nível
+
+O nome enviado é o **ponto de início do fluxo**. O middleware libera **todos os dispositivos** daquele nó até as folhas do ramo na árvore `deviceOrg`:
+
+```text
+CHU - CENTRAL     ← envia isto → todos os dispositivos sob o topo
+ └── INT5         ← envia isto → todos sob INT5 até as folhas
+      ├── Catraca A
+      └── Sala B
+ └── OutroNivel   ← fora do ramo se enviou INT5
+```
+
+Irmãos fora do ramo escolhido **não** entram em `acsChannelIds`.
 
 ---
 
 ## Webhook BioDoc (`GET /biodoc`)
 
-Fluxo automático via `local_name` / `reguiredName` / `details.nmLocal` do BioDoc. Ver [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Fluxo automático via `local_name` / `reguiredName` / `details.nmLocal` do BioDoc. Ver [`ARCHITECTURE.md`](ARCHITECTURE.md). O mesmo critério de ramo vale quando o nome resolve via `deviceOrg`.
 
 ---
 
 ## Resolução de portas (`acsChannelIds`)
 
-Automática a partir da regra de acesso (API ACS 6.2.8). Detalhes técnicos nos logs do middleware.
+Ordem: regra de acesso (API ACS 6.2.8) → árvore `deviceOrg` (nó + descendentes) → cópia por host visitante. Detalhes nos logs do middleware (`acsChannelIds via deviceOrg`).
 
 ---
 
@@ -36,6 +50,6 @@ Automática a partir da regra de acesso (API ACS 6.2.8). Detalhes técnicos nos 
 
 ```bash
 python scripts/list_visitor_config.py
-python scripts/test_defense_sync_visitor.py --org-code "CHU - CENTRAL"
+python scripts/test_defense_sync_visitor.py --org-code "INT5"
 python scripts/test_sync_via_api.py
 ```
