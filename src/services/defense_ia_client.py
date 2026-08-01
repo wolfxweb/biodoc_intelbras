@@ -224,6 +224,21 @@ def _parse_org_code_to_name(body: object) -> dict[str, str]:
     return names
 
 
+def _node_own_channels(node: dict[str, Any]) -> list[str]:
+    """Coleta apenas channel IDs do nó, sem descendentes."""
+    channels: list[str] = []
+    seen: set[str] = set()
+    for item in node.get("channel") or []:
+        if not isinstance(item, dict):
+            continue
+        channel_id = str(item.get("id") or "").strip()
+        if not channel_id or channel_id in seen:
+            continue
+        seen.add(channel_id)
+        channels.append(channel_id)
+    return channels
+
+
 def _extract_department_channels(department: dict[str, Any]) -> list[str]:
     """Coleta channel IDs do nó e de todos os descendentes (fluxo até as folhas).
 
@@ -233,11 +248,8 @@ def _extract_department_channels(department: dict[str, Any]) -> list[str]:
     channels: list[str] = []
 
     def _walk(node: dict[str, Any]) -> None:
-        for item in node.get("channel") or []:
-            if not isinstance(item, dict):
-                continue
-            channel_id = str(item.get("id") or "").strip()
-            if not channel_id or channel_id in seen:
+        for channel_id in _node_own_channels(node):
+            if channel_id in seen:
                 continue
             seen.add(channel_id)
             channels.append(channel_id)
@@ -252,31 +264,120 @@ def _extract_department_channels(department: dict[str, Any]) -> list[str]:
     return channels
 
 
+def _iter_device_org_nodes(departments: list[object]):
+    """Percorre deviceOrg plano ou aninhado, yield de cada departamento dict."""
+    for department in departments:
+        if not isinstance(department, dict):
+            continue
+        yield department
+        sub = department.get("departments") or department.get("deparments") or []
+        if isinstance(sub, list):
+            yield from _iter_device_org_nodes(sub)
+
+
+def _index_device_org_by_code(
+    departments: list[object],
+) -> dict[str, dict[str, Any]]:
+    """Índice code -> nó (primeiro ganha se houver duplicata)."""
+    index: dict[str, dict[str, Any]] = {}
+    for node in _iter_device_org_nodes(departments):
+        code = str(node.get("code") or "").strip()
+        if code and code not in index:
+            index[code] = node
+    return index
+
+
+def _ancestor_org_codes(code: str) -> list[str]:
+    """Códigos ancestrais do fluxo (pai → …), excluindo a raiz do site.
+
+    Blocos de 3 dígitos. A raiz (``001`` / Local Atual / Current Site) fica de
+    fora — portas genéricas (passarela etc.) não entram no fluxo CHU/Bloco.
+
+    Ex.: ``001002003`` → ``[\"001002\"]`` (sem ``001``).
+    """
+    raw = (code or "").strip()
+    if not raw.isdigit() or len(raw) <= 3:
+        return []
+    ancestors: list[str] = []
+    current = raw
+    while len(current) > 3:
+        current = current[:-3]
+        if not current:
+            break
+        # len == 3 → raiz do site (Local Atual); não faz parte do fluxo do ramo
+        if len(current) <= 3:
+            break
+        ancestors.append(current)
+    ancestors.reverse()
+    return ancestors
+
+
+def _find_device_org_node(
+    departments: list[object],
+    *,
+    org_code: str | None = None,
+    org_name_key: str | None = None,
+) -> dict[str, Any] | None:
+    for node in _iter_device_org_nodes(departments):
+        code = str(node.get("code") or "").strip()
+        name_key = _normalize_org_lookup_key(str(node.get("name") or ""))
+        if org_code and code == org_code:
+            return node
+        if org_name_key and name_key == org_name_key:
+            return node
+    return None
+
+
+def _dedupe_channels(*groups: list[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for group in groups:
+        for channel_id in group:
+            if channel_id in seen:
+                continue
+            seen.add(channel_id)
+            merged.append(channel_id)
+    return merged
+
+
 def _find_device_org_channels(
     departments: list[object],
     *,
     org_code: str | None = None,
     org_name_key: str | None = None,
+    ancestor_channels: list[str] | None = None,
 ) -> list[str]:
-    for department in departments:
-        if not isinstance(department, dict):
-            continue
-        code = str(department.get("code") or "").strip()
-        name_key = _normalize_org_lookup_key(str(department.get("name") or ""))
-        if org_code and code == org_code:
-            return _extract_department_channels(department)
-        if org_name_key and name_key == org_name_key:
-            return _extract_department_channels(department)
-        sub = department.get("departments") or department.get("deparments") or []
-        if isinstance(sub, list):
-            found = _find_device_org_channels(
-                sub,
-                org_code=org_code,
-                org_name_key=org_name_key,
-            )
-            if found:
-                return found
-    return []
+    """Encontra o nó e agrega canais do fluxo (ancestrais + nó + descendentes).
+
+    Preferência: hierarquia pelo **código** (blocos de 3 dígitos), adequada ao
+    deviceOrg plano da Unimed. Fallback: nesting JSON + ``ancestor_channels``.
+    """
+    match = _find_device_org_node(
+        departments, org_code=org_code, org_name_key=org_name_key
+    )
+    if match is None:
+        return []
+
+    code = str(match.get("code") or "").strip()
+    if code.isdigit():
+        by_code = _index_device_org_by_code(departments)
+        ancestor_ids: list[str] = []
+        for anc_code in _ancestor_org_codes(code):
+            ancestor = by_code.get(anc_code)
+            if ancestor is not None:
+                ancestor_ids.extend(_node_own_channels(ancestor))
+        match_ids = _extract_department_channels(match)
+        descendant_ids: list[str] = []
+        for other_code, other_node in sorted(by_code.items()):
+            if other_code == code:
+                continue
+            if other_code.startswith(code) and len(other_code) > len(code):
+                descendant_ids.extend(_node_own_channels(other_node))
+        return _dedupe_channels(ancestor_ids, match_ids, descendant_ids)
+
+    # Fallback: nesting JSON (sem code numérico)
+    path_so_far = list(ancestor_channels or [])
+    return _dedupe_channels(path_so_far, _extract_department_channels(match))
 
 
 class DefenseIAError(Exception):

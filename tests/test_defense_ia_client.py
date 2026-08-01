@@ -19,6 +19,7 @@ from src.services.defense_ia_client import (
     DefenseIAError,
     DefenseIASettings,
     DefenseIAArgumentError,
+    _ancestor_org_codes,
     _extract_department_channels,
     _find_device_org_channels,
     _normalize_org_lookup_key,
@@ -1073,39 +1074,45 @@ async def test_resolve_channels_by_visited_name_from_visitor_detail():
 
 _NESTED_DEVICE_ORG = [
     {
-        "name": "CHU - CENTRAL",
+        "name": "Current Site",
         "code": "001",
+        "channel": [{"id": "1000099$7$0$0"}],
+        "departments": [],
+    },
+    {
+        "name": "CHU - CENTRAL",
+        "code": "001002",
         "channel": [{"id": "1000001$7$0$0"}],
         "departments": [
             {
                 "name": "INT5",
-                "code": "001005",
+                "code": "001002003",
                 "channel": [{"id": "1000005$7$0$0"}],
                 "departments": [
                     {
                         "name": "Catraca A",
-                        "code": "001005001",
+                        "code": "001002003001",
                         "channel": [{"id": "1000051$7$0$0"}],
                     },
                     {
                         "name": "Sala B",
-                        "code": "001005002",
+                        "code": "001002003002",
                         "channel": [{"id": "1000052$7$0$0"}],
                     },
                 ],
             },
             {
                 "name": "OutroNivel",
-                "code": "001006",
+                "code": "001002006",
                 "channel": [{"id": "1000006$7$0$0"}],
             },
         ],
-    }
+    },
 ]
 
 
 def test_extract_department_channels_aggregates_subtree():
-    topo = _NESTED_DEVICE_ORG[0]
+    topo = _NESTED_DEVICE_ORG[1]
     assert _extract_department_channels(topo) == [
         "1000001$7$0$0",
         "1000005$7$0$0",
@@ -1123,13 +1130,27 @@ def test_extract_department_channels_aggregates_subtree():
     assert _extract_department_channels(leaf) == ["1000051$7$0$0"]
 
 
-def test_find_device_org_channels_cuts_at_named_level():
+def test_find_device_org_channels_includes_ancestor_path():
     assert _find_device_org_channels(
         _NESTED_DEVICE_ORG,
         org_name_key=_normalize_org_lookup_key("INT5"),
     ) == [
+        "1000001$7$0$0",
         "1000005$7$0$0",
         "1000051$7$0$0",
+        "1000052$7$0$0",
+    ]
+    # Local Atual / Current Site (passarela) fora do fluxo CHU
+    assert "1000099$7$0$0" not in _find_device_org_channels(
+        _NESTED_DEVICE_ORG,
+        org_name_key=_normalize_org_lookup_key("INT5"),
+    )
+    assert _find_device_org_channels(
+        _NESTED_DEVICE_ORG,
+        org_name_key=_normalize_org_lookup_key("Sala B"),
+    ) == [
+        "1000001$7$0$0",
+        "1000005$7$0$0",
         "1000052$7$0$0",
     ]
     assert _find_device_org_channels(
@@ -1142,16 +1163,102 @@ def test_find_device_org_channels_cuts_at_named_level():
         "1000052$7$0$0",
         "1000006$7$0$0",
     ]
-    assert _find_device_org_channels(
+    assert "1000099$7$0$0" not in _find_device_org_channels(
         _NESTED_DEVICE_ORG,
-        org_name_key=_normalize_org_lookup_key("Sala B"),
-    ) == ["1000052$7$0$0"]
-    # Irmão fora do ramo INT5 não entra no lookup de INT5
+        org_name_key=_normalize_org_lookup_key("CHU - CENTRAL"),
+    )
+    # Irmão fora do caminho INT5 não entra
     int5_ids = _find_device_org_channels(
         _NESTED_DEVICE_ORG,
-        org_code="001005",
+        org_code="001002003",
     )
+    assert int5_ids == [
+        "1000001$7$0$0",
+        "1000005$7$0$0",
+        "1000051$7$0$0",
+        "1000052$7$0$0",
+    ]
     assert "1000006$7$0$0" not in int5_ids
+
+
+# deviceOrg plano (Unimed): hierarquia só no code (blocos de 3)
+_FLAT_DEVICE_ORG = [
+    {
+        "name": "Current Site",
+        "code": "001",
+        "channel": [
+            {"id": "1000001$7$0$0"},
+            {"id": "1000002$7$0$0"},
+        ],
+    },
+    {
+        "name": "CHU Central",
+        "code": "001002",
+        "channel": [{"id": "1000066$7$0$0"}],
+    },
+    {
+        "name": "Int5",
+        "code": "001002003",
+        "channel": [{"id": "1000115$7$0$0"}],
+    },
+    {
+        "name": "Int8",
+        "code": "001002006",
+        "channel": [{"id": "1000122$7$0$0"}],
+    },
+    {
+        "name": "Refeitorio",
+        "code": "001003",
+        "channel": [{"id": "1000071$7$0$0"}],
+    },
+]
+
+
+def test_ancestor_org_codes_chops_by_three():
+    assert _ancestor_org_codes("001002003") == ["001002"]
+    assert _ancestor_org_codes("001002") == []
+    assert _ancestor_org_codes("001") == []
+    assert _ancestor_org_codes("") == []
+    assert _ancestor_org_codes("abc") == []
+
+
+def test_find_device_org_channels_flat_code_prefix_flow():
+    int5 = _find_device_org_channels(
+        _FLAT_DEVICE_ORG,
+        org_name_key=_normalize_org_lookup_key("Int5"),
+    )
+    assert int5 == [
+        "1000066$7$0$0",
+        "1000115$7$0$0",
+    ]
+    # Current Site (Local Atual) fora do fluxo CHU
+    assert "1000001$7$0$0" not in int5
+    assert "1000002$7$0$0" not in int5
+    assert "1000122$7$0$0" not in int5
+    assert "1000071$7$0$0" not in int5
+
+    int8 = _find_device_org_channels(
+        _FLAT_DEVICE_ORG,
+        org_name_key=_normalize_org_lookup_key("Int8"),
+    )
+    assert int8 == [
+        "1000066$7$0$0",
+        "1000122$7$0$0",
+    ]
+    assert "1000115$7$0$0" not in int8
+    assert "1000001$7$0$0" not in int8
+
+    chu = _find_device_org_channels(
+        _FLAT_DEVICE_ORG,
+        org_name_key=_normalize_org_lookup_key("CHU Central"),
+    )
+    assert chu == [
+        "1000066$7$0$0",
+        "1000115$7$0$0",
+        "1000122$7$0$0",
+    ]
+    assert "1000001$7$0$0" not in chu
+    assert "1000071$7$0$0" not in chu
 
 
 @pytest.mark.asyncio
@@ -1240,11 +1347,44 @@ async def test_resolve_visitor_entrance_ids_expands_int5_subtree():
         await client.close()
         await http_client.aclose()
     assert ids == [
+        "1000001$7$0$0",
         "1000005$7$0$0",
         "1000051$7$0$0",
         "1000052$7$0$0",
     ]
     assert "1000006$7$0$0" not in ids
+    assert "1000099$7$0$0" not in ids
+
+
+@pytest.mark.asyncio
+async def test_resolve_visitor_entrance_ids_flat_int5_code_prefix():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/obms/api/v1.1/acs/access-group/list":
+            return httpx.Response(404)
+        if request.url.path == BRMS_DEVICE_ORG_TREE:
+            return httpx.Response(
+                200,
+                json={"code": 1000, "data": {"departments": _FLAT_DEVICE_ORG}},
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    client._token = "token"
+    try:
+        ids = await client.resolve_visitor_entrance_ids(
+            access_rule_name="Int5",
+            visited_name="Int5",
+        )
+    finally:
+        await client.close()
+        await http_client.aclose()
+    assert ids == [
+        "1000066$7$0$0",
+        "1000115$7$0$0",
+    ]
+    assert "1000122$7$0$0" not in ids
+    assert "1000001$7$0$0" not in ids
 
 
 @pytest.mark.asyncio

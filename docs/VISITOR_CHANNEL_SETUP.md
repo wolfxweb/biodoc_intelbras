@@ -16,33 +16,38 @@ Informe em **`defense.org_code`** o **nível da árvore de dispositivos** (ou re
 }
 ```
 
-Exemplos: `INT5`, `CDI`, `CHU - CENTRAL`, `Refeitorio` — **igual ao painel**.
+Exemplos: `INT5`, `Int8`, `CDI`, `CHU Central`, `Refeitorio` — **igual ao painel** (ex.: `CHU Central`, não `CHU - CENTRAL`).
 
 ### Semântica do nível
 
-O nome enviado é o **ponto de início do fluxo**. O middleware libera **todos os dispositivos** daquele nó até as folhas do ramo na árvore `deviceOrg`:
+O nome enviado define o **destino**. O middleware resolve o `code` no `deviceOrg` e libera:
+
+1. **Pontos anteriores do ramo** — ancestrais pelo prefixo do código (blocos de 3), **sem** a raiz Local Atual / Current Site (`001`)
+2. **O próprio nível** e **descendentes** (códigos mais longos com o mesmo prefixo)
+
+A raiz do site (passarela e acessos genéricos de Local Atual) **não** entra quando o destino é um fluxo como CHU/Int5.
 
 ```text
-CHU - CENTRAL     ← envia isto → todos os dispositivos sob o topo
- └── INT5         ← envia isto → todos sob INT5 até as folhas
-      ├── Catraca A
-      └── Sala B
- └── OutroNivel   ← fora do ramo se enviou INT5
+001 Current Site     ← NÃO entra ao enviar Int5 (outro caminho / local base)
+001002 CHU Central   ← entra ao enviar Int5 / Int8
+001002003 Int5       ← envia Int5 → CHU + Int5
+001002006 Int8       ← irmão; NÃO entra se enviou Int5
+001003 Refeitorio    ← outro ramo; NÃO entra
 ```
 
-Irmãos fora do ramo escolhido **não** entram em `acsChannelIds`.
+Irmãos (mesmo pai, outro sufixo) **não** entram em `acsChannelIds`.
 
 ---
 
 ## Webhook BioDoc (`GET /biodoc`)
 
-Fluxo automático via `local_name` / `reguiredName` / `details.nmLocal` do BioDoc. Ver [`ARCHITECTURE.md`](ARCHITECTURE.md). O mesmo critério de ramo vale quando o nome resolve via `deviceOrg`.
+Fluxo automático via `local_name` / `reguiredName` / `details.nmLocal` do BioDoc. Ver [`ARCHITECTURE.md`](ARCHITECTURE.md). O mesmo critério (caminho + nível + folhas) vale quando o nome resolve via `deviceOrg`.
 
 ---
 
 ## Resolução de portas (`acsChannelIds`)
 
-Ordem: regra de acesso (API ACS 6.2.8) → árvore `deviceOrg` (nó + descendentes) → cópia por host visitante. Detalhes nos logs do middleware (`acsChannelIds via deviceOrg`).
+Ordem: regra de acesso (API ACS 6.2.8) → árvore `deviceOrg` (ancestrais/descendentes por prefixo de `code` + nesting) → cópia por host visitante. Detalhes nos logs do middleware (`acsChannelIds via deviceOrg`).
 
 ---
 
