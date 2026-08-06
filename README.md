@@ -287,9 +287,9 @@ Manual operacional para a equipe: [`docs/MANUAL_CADASTRO_DIRETO_DEFENSE.md`](doc
 | Fluxo | Destino no Defense | Portas |
 |-------|-------------------|--------|
 | **Webhook BioDoc** (`GET /biodoc`) | Automático (`local_name` / `reguiredName` / `details.nmLocal` → host visitante) | Automático |
-| **POST /v1/person/sync** | `defense.org_code` = **nível** (ex.: `INT5`, `Int8`) | Ramo (ancestrais sem Local Atual) + nível + descendentes |
+| **POST /v1/person/sync** | `defense.org_code` = **nível** (ex.: `INT5`, `Int8`) | Pastas no caminho (soltos) sem Local Atual + nível + descendentes |
 
-Exemplo de body para sync manual: [`data/test_post_sync.json`](data/test_post_sync.json) — resumo em [`data/test_post_sync.md`](data/test_post_sync.md). Qualquer nível válido em `org_code` (ex.: `INT5`, `Int8`) libera ancestrais e descendentes pelo prefixo do código no `deviceOrg`; ver [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md).
+Exemplo de body para sync manual: [`data/test_post_sync.json`](data/test_post_sync.json) — resumo em [`data/test_post_sync.md`](data/test_post_sync.md). Qualquer nível válido em `org_code` (ex.: `INT5`, `Int8`) libera pastas no caminho (dispositivos soltos) + descendentes; ver [`docs/VISITOR_CHANNEL_SETUP.md`](docs/VISITOR_CHANNEL_SETUP.md).
 
 Testes:
 

@@ -22,6 +22,7 @@ from src.services.defense_ia_client import (
     _ancestor_org_codes,
     _extract_department_channels,
     _find_device_org_channels,
+    _find_device_org_path,
     _normalize_org_lookup_key,
     brms_person_path,
     build_auth_signatures,
@@ -1261,6 +1262,166 @@ def test_find_device_org_channels_flat_code_prefix_flow():
     assert "1000071$7$0$0" not in chu
 
 
+# Recepção → INT5: code do INT5 NÃO tem Recepção como ancestral por chop;
+# nesting JSON deve liberar os dispositivos soltos da pasta pai.
+_RECEPCAO_INT5_ORG = [
+    {
+        "name": "Current Site",
+        "code": "001",
+        "channel": [{"id": "1000099$7$0$0"}],
+        "departments": [],
+    },
+    {
+        "name": "Recepção",
+        "code": "001050",
+        "channel": [
+            {"id": "1000201$7$0$0"},
+            {"id": "1000202$7$0$0"},
+        ],
+        "departments": [
+            {
+                "name": "INT5",
+                "code": "001002003",
+                "channel": [{"id": "1000115$7$0$0"}],
+                "departments": [
+                    {
+                        "name": "Catraca",
+                        "code": "001002003001",
+                        "channel": [{"id": "1000051$7$0$0"}],
+                    }
+                ],
+            },
+            {
+                "name": "OutroNivel",
+                "code": "001050006",
+                "channel": [{"id": "1000209$7$0$0"}],
+            },
+        ],
+    },
+]
+
+
+# Nome genérico de pasta (prova que não é hardcode de "Recepção")
+_BLOCO_NORTE_ORG = [
+    {
+        "name": "Bloco Norte",
+        "code": "001060",
+        "channel": [{"id": "1000301$7$0$0"}],
+        "departments": [
+            {
+                "name": "PA",
+                "code": "001060005",
+                "channel": [{"id": "1000305$7$0$0"}],
+            },
+            {
+                "name": "CDI",
+                "code": "001060008",
+                "channel": [{"id": "1000308$7$0$0"}],
+            },
+        ],
+    },
+]
+
+
+def test_find_device_org_path_recepcao_to_int5():
+    path = _find_device_org_path(
+        _RECEPCAO_INT5_ORG,
+        org_name_key=_normalize_org_lookup_key("INT5"),
+    )
+    assert [n["name"] for n in path] == ["Recepção", "INT5"]
+
+
+def test_find_device_org_channels_recepcao_soltos_on_path():
+    ids = _find_device_org_channels(
+        _RECEPCAO_INT5_ORG,
+        org_name_key=_normalize_org_lookup_key("INT5"),
+    )
+    assert ids == [
+        "1000201$7$0$0",
+        "1000202$7$0$0",
+        "1000115$7$0$0",
+        "1000051$7$0$0",
+    ]
+    assert "1000209$7$0$0" not in ids
+    assert "1000099$7$0$0" not in ids
+
+
+def test_find_device_org_channels_generic_parent_folder_soltos():
+    ids = _find_device_org_channels(
+        _BLOCO_NORTE_ORG,
+        org_name_key=_normalize_org_lookup_key("PA"),
+    )
+    assert ids == [
+        "1000301$7$0$0",
+        "1000305$7$0$0",
+    ]
+    assert "1000308$7$0$0" not in ids
+
+
+def test_find_device_org_node_matches_recepcao_without_accent():
+    """Recepçao (painel) casa com busca 'recepcao' / 'Recepção'."""
+    from src.services.defense_ia_client import (
+        _find_device_org_node,
+        _normalize_visited_name_key,
+    )
+
+    tree = [
+        {
+            "name": "Recepçao",
+            "code": "001002008",
+            "channel": [{"id": "1000077$7$0$0"}],
+            "departments": [
+                {
+                    "name": "int5",
+                    "code": "001002008001",
+                    "channel": [{"id": "1000115$7$0$0"}],
+                }
+            ],
+        }
+    ]
+    node = _find_device_org_node(
+        tree, org_name_key=_normalize_visited_name_key("Recepção")
+    )
+    assert node is not None
+    assert node["code"] == "001002008"
+    ids = _find_device_org_channels(
+        tree, org_name_key=_normalize_visited_name_key("INT5")
+    )
+    assert ids == ["1000077$7$0$0", "1000115$7$0$0"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_visitor_entrance_ids_recepcao_path_soltos():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/obms/api/v1.1/acs/access-group/list":
+            return httpx.Response(404)
+        if request.url.path == BRMS_DEVICE_ORG_TREE:
+            return httpx.Response(
+                200,
+                json={"code": 1000, "data": {"departments": _RECEPCAO_INT5_ORG}},
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    client._token = "token"
+    try:
+        ids = await client.resolve_visitor_entrance_ids(
+            access_rule_name="INT5",
+            visited_name="INT5",
+        )
+    finally:
+        await client.close()
+        await http_client.aclose()
+    assert ids == [
+        "1000201$7$0$0",
+        "1000202$7$0$0",
+        "1000115$7$0$0",
+        "1000051$7$0$0",
+    ]
+    assert "1000209$7$0$0" not in ids
+
+
 @pytest.mark.asyncio
 async def test_resolve_visitor_entrance_ids_uses_device_org_when_access_group_404():
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -1536,3 +1697,71 @@ async def test_sync_visitor_posts_to_visitor_endpoint():
     assert posted[0]["visitorName"] == "Maria Silva"
     assert posted[0]["rightInfo"]["acsChannelIds"] == ["1000174$7$0$0"]
     assert posted[0]["visitedName"] == "recepção central"
+
+
+@pytest.mark.asyncio
+async def test_sync_visitor_retries_on_rate_limit_142016(monkeypatch):
+    """Defense 142016 (Too frequently) deve retentar e concluir."""
+    posted = 0
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(
+        "src.services.defense_ia_client.asyncio.sleep",
+        fake_sleep,
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posted
+        if request.url.path == "/obms/api/v1.1/acs/access-group/list":
+            return httpx.Response(404)
+        if request.url.path == BRMS_DEVICE_ORG_TREE:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 1000,
+                    "data": {
+                        "departments": [
+                            {
+                                "name": "CDI",
+                                "code": "001006001",
+                                "channel": [{"id": "1000084$7$0$0"}],
+                            }
+                        ]
+                    },
+                },
+            )
+        if request.url.path == BRMS_VISITOR and request.method == "POST":
+            posted += 1
+            if posted < 3:
+                return httpx.Response(
+                    200,
+                    json={
+                        "code": 142016,
+                        "desc": "Too frequently operation, Please try again later",
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={"code": 1000, "data": {"visitorId": "99", "personId": "1"}},
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    client._token = "token"
+    try:
+        result = await client.sync_visitor(
+            sync_payload(),
+            access_rule_name="CDI",
+            visited_name="CDI",
+        )
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert result["data"]["visitorId"] == "99"
+    assert posted == 3
+    assert sleeps == [1.5, 3.0]

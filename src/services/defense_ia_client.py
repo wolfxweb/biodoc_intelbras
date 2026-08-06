@@ -38,6 +38,10 @@ LEGACY_UPDATE_TOKEN = "/admin/API/accounts/updateToken"
 
 JSON_HEADERS = {"content-type": "application/json;charset=UTF-8"}
 SUCCESS_CODES = (None, 0, "0", 1000, "1000")
+# Defense rejeita cadastros em rajada (HTTP 200 + code no body).
+RATE_LIMIT_CODES = (142016, "142016")
+VISITOR_RATE_LIMIT_RETRIES = 4
+VISITOR_RATE_LIMIT_BASE_DELAY_SECONDS = 1.5
 # Defense devolve HTTP 200 + code 1001 em PUT redundante; GET confirma estado desejado.
 IDEMPOTENT_MUTATION_CODES = (1001, "1001")
 
@@ -50,7 +54,7 @@ BRMS_ACCESS_GROUP_LIST = "/obms/api/v1.1/acs/access-group/list"
 BRMS_ACCESS_GROUP_DETAIL = "/obms/api/v1.1/acs/access-group/{group_id}"
 BRMS_DOOR_GROUP_LIST = "/obms/api/v1.0/accessControl/doorGroupList"
 PERSON_GROUPS_CACHE_TTL_SECONDS = 1800.0
-DEVICE_ORG_CACHE_TTL_SECONDS = 1800.0
+DEVICE_ORG_CACHE_TTL_SECONDS = 300.0
 VISITED_NAME_CHANNEL_CACHE_TTL_SECONDS = 3600.0
 ACCESS_RULE_CHANNEL_CACHE_TTL_SECONDS = 3600.0
 VISITOR_PAGE_LOOKBACK_DAYS = 730
@@ -320,12 +324,74 @@ def _find_device_org_node(
 ) -> dict[str, Any] | None:
     for node in _iter_device_org_nodes(departments):
         code = str(node.get("code") or "").strip()
-        name_key = _normalize_org_lookup_key(str(node.get("name") or ""))
+        # Mesma normalização da busca (acentos/espaços) — Recepçao ≈ recepcao
+        name_key = _normalize_visited_name_key(str(node.get("name") or ""))
         if org_code and code == org_code:
             return node
         if org_name_key and name_key == org_name_key:
             return node
     return None
+
+
+_SITE_ROOT_NAME_KEYS = frozenset(
+    {
+        "current site",
+        "local atual",
+    }
+)
+
+
+def _is_site_root_node(node: dict[str, Any]) -> bool:
+    """True for Local Atual / Current Site (passarela) — fora do fluxo do ramo."""
+    code = str(node.get("code") or "").strip()
+    if code.isdigit() and len(code) <= 3:
+        return True
+    name_key = _normalize_visited_name_key(str(node.get("name") or ""))
+    return name_key in _SITE_ROOT_NAME_KEYS
+
+
+def _node_matches_org(
+    node: dict[str, Any],
+    *,
+    org_code: str | None = None,
+    org_name_key: str | None = None,
+) -> bool:
+    code = str(node.get("code") or "").strip()
+    name_key = _normalize_visited_name_key(str(node.get("name") or ""))
+    if org_code and code == org_code:
+        return True
+    if org_name_key and name_key == org_name_key:
+        return True
+    return False
+
+
+def _find_device_org_path(
+    departments: list[object],
+    *,
+    org_code: str | None = None,
+    org_name_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Caminho JSON da raiz até o nó (inclusive), ou [] se não achar."""
+
+    def _dfs(
+        nodes: list[object], trail: list[dict[str, Any]]
+    ) -> list[dict[str, Any]] | None:
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            next_trail = trail + [node]
+            if _node_matches_org(
+                node, org_code=org_code, org_name_key=org_name_key
+            ):
+                return next_trail
+            sub = node.get("departments") or node.get("deparments") or []
+            if isinstance(sub, list) and sub:
+                found = _dfs(sub, next_trail)
+                if found is not None:
+                    return found
+        return None
+
+    return _dfs(departments, []) or []
 
 
 def _dedupe_channels(*groups: list[str]) -> list[str]:
@@ -347,37 +413,48 @@ def _find_device_org_channels(
     org_name_key: str | None = None,
     ancestor_channels: list[str] | None = None,
 ) -> list[str]:
-    """Encontra o nó e agrega canais do fluxo (ancestrais + nó + descendentes).
+    """Agrega canais do fluxo: pastas no caminho (soltos) + nó + descendentes.
 
-    Preferência: hierarquia pelo **código** (blocos de 3 dígitos), adequada ao
-    deviceOrg plano da Unimed. Fallback: nesting JSON + ``ancestor_channels``.
+    Ancestrais vêm de duas fontes (dedupe):
+    - pais no nesting JSON (qualquer pasta com ``channel[]`` no caminho)
+    - prefixo de ``code`` (deviceOrg plano Unimed)
+
+    Exclui Local Atual / Current Site (``001``). Irmãos fora do caminho não entram.
     """
-    match = _find_device_org_node(
+    path = _find_device_org_path(
+        departments, org_code=org_code, org_name_key=org_name_key
+    )
+    match = path[-1] if path else _find_device_org_node(
         departments, org_code=org_code, org_name_key=org_name_key
     )
     if match is None:
         return []
 
+    ancestor_ids: list[str] = list(ancestor_channels or [])
+    # Pais do caminho JSON (dispositivos soltos na pasta), exceto raiz do site
+    for parent in path[:-1]:
+        if _is_site_root_node(parent):
+            continue
+        ancestor_ids.extend(_node_own_channels(parent))
+
     code = str(match.get("code") or "").strip()
+    by_code = _index_device_org_by_code(departments) if code.isdigit() else {}
     if code.isdigit():
-        by_code = _index_device_org_by_code(departments)
-        ancestor_ids: list[str] = []
         for anc_code in _ancestor_org_codes(code):
             ancestor = by_code.get(anc_code)
-            if ancestor is not None:
+            if ancestor is not None and not _is_site_root_node(ancestor):
                 ancestor_ids.extend(_node_own_channels(ancestor))
-        match_ids = _extract_department_channels(match)
-        descendant_ids: list[str] = []
+
+    match_ids = _extract_department_channels(match)
+    descendant_ids: list[str] = []
+    if code.isdigit():
         for other_code, other_node in sorted(by_code.items()):
             if other_code == code:
                 continue
             if other_code.startswith(code) and len(other_code) > len(code):
                 descendant_ids.extend(_node_own_channels(other_node))
-        return _dedupe_channels(ancestor_ids, match_ids, descendant_ids)
 
-    # Fallback: nesting JSON (sem code numérico)
-    path_so_far = list(ancestor_channels or [])
-    return _dedupe_channels(path_so_far, _extract_department_channels(match))
+    return _dedupe_channels(ancestor_ids, match_ids, descendant_ids)
 
 
 class DefenseIAError(Exception):
@@ -473,6 +550,8 @@ class DefenseIAClient:
         self._visited_channel_lock = asyncio.Lock()
         self._access_rule_channel_cache: dict[str, tuple[list[str], float]] = {}
         self._access_rule_channel_lock = asyncio.Lock()
+        # Serializa POST de visitante para reduzir 142016 (Too frequently).
+        self._visitor_write_lock = asyncio.Lock()
 
     @property
     def token(self) -> str | None:
@@ -842,23 +921,48 @@ class DefenseIAClient:
         if not self._token:
             await self.login()
 
-        response = await self._upsert_visitor_request(
-            payload,
-            entrance_ids,
-            visited_name=visited_name,
-        )
-        if response.status_code == 401:
-            await self.login()
-            response = await self._upsert_visitor_request(
-                payload,
-                entrance_ids,
-                visited_name=visited_name,
-            )
+        async with self._visitor_write_lock:
+            last_error: DefenseIAError | None = None
+            for attempt in range(VISITOR_RATE_LIMIT_RETRIES):
+                response = await self._upsert_visitor_request(
+                    payload,
+                    entrance_ids,
+                    visited_name=visited_name,
+                )
+                if response.status_code == 401:
+                    await self.login()
+                    response = await self._upsert_visitor_request(
+                        payload,
+                        entrance_ids,
+                        visited_name=visited_name,
+                    )
 
-        self._raise_for_response(response)
-        if not response.content:
-            return {}
-        return response.json()
+                if self._response_is_rate_limited(response):
+                    delay = VISITOR_RATE_LIMIT_BASE_DELAY_SECONDS * (2**attempt)
+                    logger.warning(
+                        "[DEFENSE_IA] rate limit 142016 ao cadastrar visitante "
+                        "(tentativa %d/%d) — aguardando %.1fs",
+                        attempt + 1,
+                        VISITOR_RATE_LIMIT_RETRIES,
+                        delay,
+                    )
+                    last_error = DefenseIAError(
+                        "Defense IA retornou código 142016: "
+                        "Too frequently operation, Please try again later"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                self._raise_for_response(response)
+                if not response.content:
+                    return {}
+                return response.json()
+
+            if last_error is not None:
+                raise last_error
+            raise DefenseIAError(
+                "Defense IA rate limit 142016 após várias tentativas"
+            )
 
     async def _upsert_visitor_request(
         self,
@@ -1079,7 +1183,9 @@ class DefenseIAClient:
         for lookup in (rule, host):
             if not lookup:
                 continue
-            channels = await self.resolve_channels_by_device_org_name(lookup)
+            channels = await self.resolve_channels_by_device_org_name(
+                lookup, force_refresh=True
+            )
             if channels:
                 return channels
 
@@ -1097,17 +1203,23 @@ class DefenseIAClient:
         )
         return []
 
-    async def resolve_channels_by_device_org_name(self, org_name: str) -> list[str]:
+    async def resolve_channels_by_device_org_name(
+        self, org_name: str, *, force_refresh: bool = False
+    ) -> list[str]:
         """Portas vinculadas ao departamento na árvore deviceOrg (6.2.4).
 
         No deploy Unimed a API access-group (6.2.8) retorna 404; regras como
         ``Refeitorio`` aparecem em ``deviceOrg`` com ``channel[].id``.
+
+        ``force_refresh`` atualiza a árvore (evita cache sem pastas/soltos recentes).
         """
         raw = (org_name or "").strip()
         if not raw:
             return []
 
-        departments = await self.list_device_org_departments()
+        departments = await self.list_device_org_departments(
+            force_refresh=force_refresh
+        )
         if not departments:
             return []
 
@@ -1118,9 +1230,16 @@ class DefenseIAClient:
             channels = _find_device_org_channels(departments, org_name_key=name_key)
 
         if channels:
+            match = _find_device_org_node(
+                departments,
+                org_code=raw if raw.isdigit() else None,
+                org_name_key=None if raw.isdigit() else _normalize_visited_name_key(raw),
+            )
+            match_code = str((match or {}).get("code") or "")
             logger.info(
-                "[DEFENSE_IA] acsChannelIds via deviceOrg %r: %s",
+                "[DEFENSE_IA] acsChannelIds via deviceOrg %r code=%r: %s",
                 raw,
+                match_code or None,
                 channels,
             )
         return channels
@@ -1926,6 +2045,22 @@ class DefenseIAClient:
         if isinstance(payload, dict):
             return payload.get("code")
         return None
+
+    @staticmethod
+    def _response_is_rate_limited(response: httpx.Response) -> bool:
+        if not response.content:
+            return False
+        try:
+            payload = response.json()
+        except ValueError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        code = payload.get("code")
+        if code in RATE_LIMIT_CODES:
+            return True
+        desc = str(payload.get("desc") or payload.get("message") or "").lower()
+        return "too frequently" in desc
 
     @staticmethod
     def _brms_mutation_ok(response: httpx.Response) -> bool:

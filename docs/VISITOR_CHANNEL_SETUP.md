@@ -20,17 +20,20 @@ Exemplos: `INT5`, `Int8`, `CDI`, `CHU Central`, `Refeitorio` — **igual ao pain
 
 ### Semântica do nível
 
-O nome enviado define o **destino**. O middleware resolve o `code` no `deviceOrg` e libera:
+O nome enviado define o **destino**. O middleware resolve o nó no `deviceOrg` e libera:
 
-1. **Pontos anteriores do ramo** — ancestrais pelo prefixo do código (blocos de 3), **sem** a raiz Local Atual / Current Site (`001`)
-2. **O próprio nível** e **descendentes** (códigos mais longos com o mesmo prefixo)
+1. **Pastas no caminho** — cada ancestral até o destino (por nesting JSON **e** prefixo de `code`), incluindo **dispositivos soltos** nessas pastas; **sem** a raiz Local Atual / Current Site (`001`)
+2. **O próprio nível** e **descendentes** (folhas do ramo / códigos mais longos com o mesmo prefixo)
+
+Qualquer pasta no caminho com dispositivo solto libera esse acesso — a regra é dinâmica (não depende do nome INT5, Recepção, etc.).
 
 A raiz do site (passarela e acessos genéricos de Local Atual) **não** entra quando o destino é um fluxo como CHU/Int5.
 
 ```text
 001 Current Site     ← NÃO entra ao enviar Int5 (outro caminho / local base)
 001002 CHU Central   ← entra ao enviar Int5 / Int8
-001002003 Int5       ← envia Int5 → CHU + Int5
+Recepção             ← se INT5 estiver sob ela, dispositivos soltos da pasta entram
+001002003 Int5       ← envia Int5 → pastas no caminho + Int5 + folhas
 001002006 Int8       ← irmão; NÃO entra se enviou Int5
 001003 Refeitorio    ← outro ramo; NÃO entra
 ```
@@ -47,7 +50,7 @@ Fluxo automático via `local_name` / `reguiredName` / `details.nmLocal` do BioDo
 
 ## Resolução de portas (`acsChannelIds`)
 
-Ordem: regra de acesso (API ACS 6.2.8) → árvore `deviceOrg` (ancestrais/descendentes por prefixo de `code` + nesting) → cópia por host visitante. Detalhes nos logs do middleware (`acsChannelIds via deviceOrg`).
+Ordem: regra de acesso (API ACS 6.2.8) → árvore `deviceOrg` (pastas no caminho via nesting + prefixo de `code` + descendentes) → cópia por host visitante. Detalhes nos logs do middleware (`acsChannelIds via deviceOrg`).
 
 ---
 
