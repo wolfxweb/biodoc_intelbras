@@ -58,6 +58,7 @@ DEVICE_ORG_CACHE_TTL_SECONDS = 300.0
 VISITED_NAME_CHANNEL_CACHE_TTL_SECONDS = 3600.0
 ACCESS_RULE_CHANNEL_CACHE_TTL_SECONDS = 3600.0
 VISITOR_PAGE_LOOKBACK_DAYS = 730
+VISITOR_VALIDITY_SECONDS = 48 * 3600
 ACS_CHANNEL_TYPE = "7"
 SYNC_TARGET_PERSON = "person"
 SYNC_TARGET_VISITOR = "visitor"
@@ -1068,7 +1069,7 @@ class DefenseIAClient:
             "idNum": payload.person.document or None,
             "expectArrivalTime": "0",
             "arrivalTime": str(now),
-            "expectLeaveTime": str(now + 86400 * 365 * 10),
+            "expectLeaveTime": str(now + VISITOR_VALIDITY_SECONDS),
             "leaveTime": "0",
             "reason": "BioDoc",
             "remark": payload.external_id,

@@ -19,6 +19,7 @@ from src.services.defense_ia_client import (
     DefenseIAError,
     DefenseIASettings,
     DefenseIAArgumentError,
+    VISITOR_VALIDITY_SECONDS,
     _ancestor_org_codes,
     _extract_department_channels,
     _find_device_org_channels,
@@ -961,6 +962,10 @@ def test_build_visitor_payload_includes_status_and_channels():
     assert payload["rightInfo"]["acsChannelIds"] == ["1000174$7$0$0"]
     assert payload["remark"] == "123"
     assert payload["authInfo"]["facePictures"]
+    arrival = int(payload["arrivalTime"])
+    leave = int(payload["expectLeaveTime"])
+    assert leave - arrival == VISITOR_VALIDITY_SECONDS
+    assert VISITOR_VALIDITY_SECONDS == 48 * 3600
 
 
 @pytest.mark.asyncio
