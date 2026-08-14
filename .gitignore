@@ -74,3 +74,8 @@ Desktop.ini
 
 # SQLite local
 *.db
+
+# Artefatos de teste local
+tests/teste.json
+tests/teste.json.bak
+tests/*.bak
