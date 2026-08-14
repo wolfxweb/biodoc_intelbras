@@ -35,7 +35,7 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 |---|---:|---|
 | `ADMIN_API_TOKEN` | Sim | Bearer para `POST /v1/person/sync` e rotas administrativas. |
 | `DEFENSE_IA_SERVER_URL` | Sim, para envio real | URL base do Defense IA. Ex: `http://192.168.0.10`. |
-| `DEFENSE_IA_USERNAME` | Sim, para envio real | Usuário da **API** no servidor Defense (ex.: `system`, em **minúsculas**). `System` pode falhar com código 2001 neste servidor. Não é o login do app Windows. |
+| `DEFENSE_IA_USERNAME` | Sim, para envio real | Usuário da **API** no servidor Defense (ex.: `system`, em **minúsculas**). `System` pode falhar com código 2001 neste servidor. **Não** use essa conta no app Windows/painel; uma sessão por usuário — duas instâncias (ex.: Swarm + `docker compose` local) geram código **2004**. |
 | `DEFENSE_IA_PASSWORD` | Sim, para envio real | Senha desse usuário de API no painel do Defense. |
 | `DEFENSE_IA_API_MODE` | Não | `brms` (Defense IA 3.x, padrão) ou `legacy` (`/admin/API/...`, V7). |
 | `DEFENSE_IA_CLIENT_TYPE` | Não | `WINPC_V2` para 3.x; `WINPC` só em servidores antigos. |

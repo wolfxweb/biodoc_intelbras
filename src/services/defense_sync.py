@@ -17,6 +17,7 @@ from src.api.schemas import SyncRequest
 from src.core.logging import logger
 from src.services.defense_ia_client import (
     FACE_SIZE_LIMIT_PUBLIC_DETAIL,
+    SESSION_CONFLICT_PUBLIC_DETAIL,
     DefenseIAArgumentError,
     DefenseIAClient,
     DefenseIAError,
@@ -25,6 +26,7 @@ from src.services.defense_ia_client import (
     defense_error_detail_public,
     extract_sync_result_ids,
     is_face_size_limit_error,
+    is_session_conflict_error,
 )
 
 
@@ -133,6 +135,11 @@ async def sync_to_defense(
             sync_request.external_id,
             exc,
         )
+        if is_session_conflict_error(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=SESSION_CONFLICT_PUBLIC_DETAIL,
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=defense_error_detail_public(exc),

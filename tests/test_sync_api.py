@@ -222,3 +222,29 @@ async def test_sync_person_returns_502_when_defense_ia_fails(
 
     assert response.status_code == 502
     assert response.json() == {"detail": "API do Defense IA indisponível"}
+
+
+@pytest.mark.asyncio
+async def test_sync_person_returns_503_on_session_conflict(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+    defense_client_mock: AsyncMock,
+):
+    from src.services.defense_ia_client import (
+        SESSION_CONFLICT_PUBLIC_DETAIL,
+        DefenseIAError,
+    )
+
+    create_source(db_session)
+    defense_client_mock.sync_visitor.side_effect = DefenseIAError(
+        "Defense IA retornou código 2004: The user has logged in."
+    )
+
+    response = await api_client.post(
+        "/v1/person/sync",
+        json=VALID_SYNC_PAYLOAD,
+        headers=integration_headers(),
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": SESSION_CONFLICT_PUBLIC_DETAIL}

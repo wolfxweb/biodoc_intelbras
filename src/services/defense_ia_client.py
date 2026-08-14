@@ -59,6 +59,7 @@ VISITED_NAME_CHANNEL_CACHE_TTL_SECONDS = 3600.0
 ACCESS_RULE_CHANNEL_CACHE_TTL_SECONDS = 3600.0
 VISITOR_PAGE_LOOKBACK_DAYS = 730
 VISITOR_VALIDITY_SECONDS = 48 * 3600
+SESSION_CONFLICT_RETRY_SECONDS = 600.0  # 10 min enquanto sessão API estiver ocupada
 ACS_CHANNEL_TYPE = "7"
 SYNC_TARGET_PERSON = "person"
 SYNC_TARGET_VISITOR = "visitor"
@@ -553,6 +554,8 @@ class DefenseIAClient:
         self._access_rule_channel_lock = asyncio.Lock()
         # Serializa POST de visitante para reduzir 142016 (Too frequently).
         self._visitor_write_lock = asyncio.Lock()
+        # Keepalive em intervalo maior enquanto a sessão API estiver ocupada (2004).
+        self._session_conflict = False
 
     @property
     def token(self) -> str | None:
@@ -563,6 +566,10 @@ class DefenseIAClient:
         if not self.settings.enabled:
             return True
         return self._token is not None
+
+    def _clear_auth_session(self) -> None:
+        self._token = None
+        self._dollar_signature = None
 
     async def start(self) -> None:
         if self._http_client is None:
@@ -591,12 +598,19 @@ class DefenseIAClient:
         async with self._auth_lock:
             if not self._http_client:
                 self._http_client = httpx.AsyncClient(timeout=self.settings.timeout_seconds)
-            if self.settings.is_brms:
-                token, dollar_signature = await self._perform_brms_login()
-            else:
-                token, dollar_signature = await self._perform_legacy_login()
+            try:
+                if self.settings.is_brms:
+                    token, dollar_signature = await self._perform_brms_login()
+                else:
+                    token, dollar_signature = await self._perform_legacy_login()
+            except DefenseIAError as exc:
+                if is_session_conflict_error(exc):
+                    self._clear_auth_session()
+                    self._session_conflict = True
+                raise
             self._token = token
             self._dollar_signature = dollar_signature
+            self._session_conflict = False
             return token
 
     async def keep_alive_once(self) -> None:
@@ -1979,18 +1993,41 @@ class DefenseIAClient:
 
     async def _keep_alive_loop(self) -> None:
         while True:
-            await asyncio.sleep(self.settings.keep_alive_interval_seconds)
+            interval = (
+                SESSION_CONFLICT_RETRY_SECONDS
+                if self._session_conflict
+                else self.settings.keep_alive_interval_seconds
+            )
+            await asyncio.sleep(interval)
             try:
                 await self.keep_alive_once()
-            except DefenseIAError:
+                self._session_conflict = False
+            except DefenseIAError as exc:
+                if is_session_conflict_error(exc):
+                    self._clear_auth_session()
+                    self._session_conflict = True
+                    keep_alive_logger.warning(
+                        "[KEEP_ALIVE] sessão ocupada (2004); nova tentativa em %d min",
+                        int(SESSION_CONFLICT_RETRY_SECONDS // 60),
+                    )
+                    continue
                 keep_alive_logger.warning("[KEEP_ALIVE] falha no ping, tentando re-login")
                 try:
                     await self.login()
+                    self._session_conflict = False
                     keep_alive_logger.info("[KEEP_ALIVE] re-login bem-sucedido apos falha")
-                except DefenseIAError as exc:
-                    keep_alive_logger.warning(
-                        "[KEEP_ALIVE] re-login falhou: %s", exc
-                    )
+                except DefenseIAError as login_exc:
+                    if is_session_conflict_error(login_exc):
+                        self._clear_auth_session()
+                        self._session_conflict = True
+                        keep_alive_logger.warning(
+                            "[KEEP_ALIVE] sessão ocupada (2004); nova tentativa em %d min",
+                            int(SESSION_CONFLICT_RETRY_SECONDS // 60),
+                        )
+                    else:
+                        keep_alive_logger.warning(
+                            "[KEEP_ALIVE] re-login falhou: %s", login_exc
+                        )
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         if not self._http_client:
@@ -2133,6 +2170,12 @@ FACE_SIZE_LIMIT_PUBLIC_DETAIL = (
     "Foto facial excede o limite do Defense IA (máximo 100 KB). "
     "Comprima a imagem (preferencialmente JPEG) e envie novamente."
 )
+SESSION_CONFLICT_PUBLIC_DETAIL = (
+    "Defense IA ocupado: a conta da API já está logada em outro lugar "
+    "(painel Windows ou outra instância do middleware). "
+    "Desconecte essa sessão e tente novamente. "
+    "O sistema tenta reconectar sozinho a cada 10 minutos."
+)
 
 
 def _looks_like_face_size_limit(text: str) -> bool:
@@ -2148,9 +2191,20 @@ def is_face_size_limit_error(exc: BaseException) -> bool:
     return _looks_like_face_size_limit(str(exc))
 
 
+def _looks_like_session_conflict(text: str) -> bool:
+    lowered = text.casefold()
+    return "2004" in lowered or "the user has logged in" in lowered
+
+
+def is_session_conflict_error(exc: BaseException) -> bool:
+    return _looks_like_session_conflict(str(exc))
+
+
 def defense_error_detail_public(exc: DefenseIAError) -> str:
     if is_face_size_limit_error(exc):
         return FACE_SIZE_LIMIT_PUBLIC_DETAIL
+    if is_session_conflict_error(exc):
+        return SESSION_CONFLICT_PUBLIC_DETAIL
     if os.getenv("DEFENSE_IA_EXPOSE_ERROR", "false").lower() in ("1", "true", "yes"):
         return str(exc)
     return "API do Defense IA indisponível"

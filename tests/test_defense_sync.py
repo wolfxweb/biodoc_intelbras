@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from src.api.schemas import SyncRequest
 from src.services.defense_ia_client import (
     FACE_SIZE_LIMIT_PUBLIC_DETAIL,
+    SESSION_CONFLICT_PUBLIC_DETAIL,
     DefenseIAArgumentError,
     DefenseIAClient,
     DefenseIAError,
@@ -92,6 +93,39 @@ def test_defense_error_detail_public_maps_face_size_limit():
         "Defense IA retornou código 8079: person face size over limit：100k."
     )
     assert defense_error_detail_public(exc) == FACE_SIZE_LIMIT_PUBLIC_DETAIL
+
+
+def test_defense_error_detail_public_maps_session_conflict():
+    exc = DefenseIAError(
+        "Defense IA retornou código 2004: The user has logged in."
+    )
+    assert defense_error_detail_public(exc) == SESSION_CONFLICT_PUBLIC_DETAIL
+
+
+@pytest.mark.asyncio
+async def test_sync_to_defense_session_conflict_returns_503():
+    client = DefenseIAClient(
+        settings=DefenseIASettings(
+            server_url="http://defense.test",
+            username="u",
+            password="p",
+            sync_target="visitor",
+        )
+    )
+    client._token = "t"
+    client.sync_visitor = AsyncMock(
+        side_effect=DefenseIAError(
+            "Defense IA retornou código 2004: The user has logged in."
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await sync_to_defense(
+            _sync_request(), client, sync_target="visitor", org_code="INT5"
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == SESSION_CONFLICT_PUBLIC_DETAIL
 
 
 @pytest.mark.asyncio
