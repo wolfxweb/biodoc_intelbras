@@ -27,6 +27,10 @@ dist/
 build/
 *.egg-info/
 
+# Documentação Markdown em docs/ (local; não versionar)
+docs/*.md
+docs/**/*.md
+
 # SDK e documentação binária da Intelbras (grandes e não-versionáveis)
 # Observação: as pastas docs/Defense IA - API e docs/Defense IA - SDK são versionadas
 # apenas em seus arquivos textuais; os binários (.dll, .exe, .zip, .lib) seguem
