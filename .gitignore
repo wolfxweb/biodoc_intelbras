@@ -10,6 +10,22 @@ data/
 !.gitignore
 !.env.example
 
+# IDE / agentes de IA (Cursor, Claude Code, Codex, Continue, Compozy)
+.cursor/
+.claude/
+.codex
+.compozy/
+.continue/
+.agents/
+.cursorrules
+.vscode/
+.idea/
+AGENTS.md
+CLAUDE.md
+skills/
+*.plan.md
+**/*.plan.md
+
 # Python bytecode e cache
 __pycache__/
 *.pyc
