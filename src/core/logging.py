@@ -74,8 +74,26 @@ def setup_logging() -> logging.Logger:
         ka_console.setFormatter(formatter)
         ka_logger.addHandler(ka_console)
 
+    # --- Baixa de visita: visitor_leave.log (JSONL, rotação diária, 30 dias) ---
+    leave_logger = logging.getLogger("biodoc_intelbras.visitor_leave")
+    leave_logger.setLevel(logging.INFO)
+    leave_logger.propagate = False
+
+    if not leave_logger.handlers:
+        leave_handler = TimedRotatingFileHandler(
+            os.path.join(log_dir, "visitor_leave.log"),
+            when="midnight",
+            interval=1,
+            backupCount=30,
+            encoding="utf-8",
+        )
+        leave_handler.suffix = "%Y-%m-%d"
+        leave_handler.setFormatter(logging.Formatter("%(message)s"))
+        leave_logger.addHandler(leave_handler)
+
     return main_logger
 
 
 logger = setup_logging()
 keep_alive_logger = logging.getLogger("biodoc_intelbras.keep_alive")
+visitor_leave_logger = logging.getLogger("biodoc_intelbras.visitor_leave")

@@ -118,4 +118,8 @@ async def integration_status(request: Request) -> dict:
             "configured": biodoc_configured,
             "ambiente": os.getenv("BIODOC_AMBIENTE", "sandbox"),
         },
+        "visit_leave": {
+            "callback_url": getattr(defense.settings, "alarm_callback_url", "") or "",
+            "webhook_configured": bool(os.getenv("VISIT_LEAVE_WEBHOOK_URL", "").strip()),
+        },
     }

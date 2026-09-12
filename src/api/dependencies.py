@@ -8,6 +8,7 @@ from src.core.logging import logger
 from src.core.security import verify_admin_token
 from src.services.biodoc_client import BiodocClient
 from src.services.defense_ia_client import DefenseIAClient
+from src.services.visitor_leave import VisitLeaveSettings
 
 integration_bearer = HTTPBearer(
     auto_error=False,
@@ -59,3 +60,10 @@ async def get_defense_client(request: Request) -> DefenseIAClient:
 
 async def get_biodoc_client(request: Request) -> BiodocClient:
     return request.app.state.biodoc_client
+
+
+async def get_visit_leave_settings(request: Request) -> VisitLeaveSettings:
+    settings = getattr(request.app.state, "visit_leave_settings", None)
+    if isinstance(settings, VisitLeaveSettings):
+        return settings
+    return VisitLeaveSettings()

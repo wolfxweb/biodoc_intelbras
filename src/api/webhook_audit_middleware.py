@@ -21,7 +21,7 @@ _SENSITIVE_QUERY = re.compile(
     r"(?i)(^|&)(token|authorization|access_token|api_key)=([^&]*)"
 )
 
-_WEBHOOK_PATH = "/biodoc"
+_WEBHOOK_PATHS = frozenset({"/biodoc", "/defense/events"})
 _LOG_TAG = "[WEBHOOK IN]"
 
 
@@ -63,11 +63,15 @@ def _format_headers(request: Request) -> dict[str, str]:
 
 
 def _should_audit_request(path: str, method: str) -> bool:
-    return path == _WEBHOOK_PATH and method.upper() in {"GET", "POST"}
+    if path not in _WEBHOOK_PATHS:
+        return False
+    if path == "/defense/events":
+        return method.upper() == "POST"
+    return method.upper() in {"GET", "POST"}
 
 
 class WebhookAuditMiddleware(BaseHTTPMiddleware):
-    """Grava hits em GET/POST /biodoc."""
+    """Grava hits em GET/POST /biodoc e POST /defense/events."""
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path

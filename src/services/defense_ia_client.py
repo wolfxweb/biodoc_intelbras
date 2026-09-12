@@ -49,6 +49,8 @@ IDEMPOTENT_MUTATION_CODES = (1001, "1001")
 BRMS_PERSON_GROUP_LIST = "/obms/api/v1.1/acs/person-group/list"
 BRMS_PERSON_DELETE_BATCH = "/obms/api/v1.1/acs/person/delete/batch"
 BRMS_VISITOR_CONFIG = "/brms/api/v1.1/config/visitor"
+BRMS_VISITOR_HISTORY = "/obms/api/v1.1/visitor/history/record/page"
+BRMS_ALARM_SUBSCRIBE = "/brms/api/v1.1/push-data/alarm/subscribe"
 BRMS_DEVICE_ORG_TREE = "/brms/api/v1.0/tree/deviceOrg"
 BRMS_ACCESS_GROUP_LIST = "/obms/api/v1.1/acs/access-group/list"
 BRMS_ACCESS_GROUP_DETAIL = "/obms/api/v1.1/acs/access-group/{group_id}"
@@ -498,6 +500,7 @@ class DefenseIASettings:
     visitor_status: str = "1"
     visited_name: str = ""
     visited_org_name: str = ""
+    alarm_callback_url: str = ""
 
     @property
     def enabled(self) -> bool:
@@ -611,6 +614,7 @@ class DefenseIAClient:
             self._token = token
             self._dollar_signature = dollar_signature
             self._session_conflict = False
+            await self._subscribe_alarm_push_safe()
             return token
 
     async def keep_alive_once(self) -> None:
@@ -1169,6 +1173,171 @@ class DefenseIAClient:
         if not isinstance(body, dict):
             return []
         return self._extract_visitor_page_items(body)
+
+    async def subscribe_alarm_push(self, *, action: str = "1") -> bool:
+        callback_url = (self.settings.alarm_callback_url or "").strip()
+        if not callback_url:
+            return False
+        if not self._token:
+            logger.info("[DEFENSE_IA] subscribe ignorado: sem token")
+            return False
+        response = await self._request(
+            "POST",
+            BRMS_ALARM_SUBSCRIBE,
+            params={"token": self._token},
+            json={"callbackUrl": callback_url, "action": action},
+            headers=self._auth_headers(),
+        )
+        if not self._brms_mutation_ok(response):
+            logger.warning(
+                "[DEFENSE_IA] subscribe alarmas falhou status=%s body=%s",
+                response.status_code,
+                response.text[:300],
+            )
+            return False
+        logger.info("[DEFENSE_IA] subscribe alarmas ok callbackUrl=%s", callback_url)
+        return True
+
+    async def _subscribe_alarm_push_safe(self) -> None:
+        if not (self.settings.alarm_callback_url or "").strip():
+            return
+        try:
+            await self.subscribe_alarm_push()
+        except Exception as exc:
+            logger.warning("[DEFENSE_IA] subscribe alarmas ignorado: %s", exc)
+
+    async def find_visitor_for_leave_event(
+        self,
+        *,
+        visitor_id: str | None = None,
+        person_id: str | None = None,
+        id_num: str | None = None,
+        card_no: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any] | None:
+        if visitor_id:
+            try:
+                detail = await self._fetch_brms_visitor(visitor_id)
+            except DefenseIAUnauthorizedError:
+                await self.login()
+                detail = await self._fetch_brms_visitor(visitor_id)
+            if detail:
+                node = detail.get("data", detail)
+                return node if isinstance(node, dict) else detail
+
+        search_keys = [value for value in (id_num, card_no, person_id, name) if value]
+        seen: set[str] = set()
+        for key in search_keys:
+            if key in seen:
+                continue
+            seen.add(key)
+            for item in await self._fetch_visitor_page(key):
+                if self._visitor_item_matches(
+                    item,
+                    visitor_id=visitor_id,
+                    person_id=person_id,
+                    id_num=id_num,
+                    card_no=card_no,
+                    name=name,
+                ):
+                    return item
+
+        history = await self._fetch_visitor_history(
+            id_no=id_num or "",
+            card_no=card_no or "",
+            visitor_name=name or "",
+        )
+        for item in history:
+            if self._visitor_item_matches(
+                item,
+                visitor_id=visitor_id,
+                person_id=person_id,
+                id_num=id_num,
+                card_no=card_no,
+                name=name,
+            ):
+                return item
+        return None
+
+    async def _fetch_visitor_history(
+        self,
+        *,
+        id_no: str = "",
+        card_no: str = "",
+        visitor_name: str = "",
+    ) -> list[dict[str, Any]]:
+        if not any((id_no, card_no, visitor_name)):
+            return []
+        if not self._token:
+            await self.login()
+        now = int(time.time())
+        params = {
+            "cardNo": card_no,
+            "idNo": id_no,
+            "tel": "",
+            "visitorName": visitor_name,
+            "page": "1",
+            "endTime": str(now + 86400),
+            "visitedCompany": "",
+            "startTime": str(now - 86400 * 30),
+            "status": "-1",
+            "visitedName": "",
+            "pageSize": "20",
+            "email": "",
+        }
+        response = await self._request(
+            "GET",
+            BRMS_VISITOR_HISTORY,
+            params=params,
+            headers=self._auth_headers(),
+        )
+        if response.status_code == 401:
+            await self.login()
+            response = await self._request(
+                "GET",
+                BRMS_VISITOR_HISTORY,
+                params=params,
+                headers=self._auth_headers(),
+            )
+        if not response.is_success or not response.content:
+            return []
+        try:
+            body = response.json()
+        except ValueError:
+            return []
+        if not isinstance(body, dict):
+            return []
+        return self._extract_visitor_page_items(body)
+
+    @staticmethod
+    def _visitor_item_matches(
+        item: dict[str, Any],
+        *,
+        visitor_id: str | None,
+        person_id: str | None,
+        id_num: str | None,
+        card_no: str | None,
+        name: str | None,
+    ) -> bool:
+        def _eq(left: object, right: str | None) -> bool:
+            if not right:
+                return False
+            return str(left or "").strip().casefold() == right.strip().casefold()
+
+        if visitor_id and _eq(item.get("visitorId") or item.get("id"), visitor_id):
+            return True
+        if person_id and _eq(item.get("personId"), person_id):
+            return True
+        if id_num and _eq(item.get("idNum") or item.get("idNo"), id_num):
+            return True
+        auth = item.get("authInfo") if isinstance(item.get("authInfo"), dict) else {}
+        if card_no and (
+            _eq(item.get("cardNo"), card_no) or _eq(auth.get("cardNo"), card_no)
+        ):
+            return True
+        if name and _eq(item.get("visitorName") or item.get("personName"), name):
+            return True
+        return False
 
     @staticmethod
     def _extract_acs_channel_ids_from_page_item(item: dict[str, Any]) -> list[str]:

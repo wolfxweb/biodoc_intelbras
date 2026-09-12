@@ -8,7 +8,7 @@ from src.core import lifespan as lifespan_module
 
 class FakeDefenseClient:
     def __init__(self) -> None:
-        self.settings = SimpleNamespace(enabled=True)
+        self.settings = SimpleNamespace(enabled=True, alarm_callback_url="")
         self.is_ready = True
         self.started = False
         self.closed = False
@@ -53,3 +53,14 @@ async def test_lifespan_starts_and_closes_defense_client(monkeypatch):
 
     assert fake_defense.closed is True
     assert fake_biodoc.closed is True
+
+
+def test_resolve_visit_leave_callback_url_uses_middleware(monkeypatch):
+    monkeypatch.delenv("VISIT_LEAVE_CALLBACK_URL", raising=False)
+    monkeypatch.setenv("MIDDLEWARE_URL", "https://un.celx.com.br")
+    assert (
+        lifespan_module.resolve_visit_leave_callback_url()
+        == "https://un.celx.com.br/defense/events"
+    )
+    monkeypatch.setenv("VISIT_LEAVE_CALLBACK_URL", "https://un.celx.com.br/custom")
+    assert lifespan_module.resolve_visit_leave_callback_url() == "https://un.celx.com.br/custom"
