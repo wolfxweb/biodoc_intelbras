@@ -15,6 +15,7 @@ from src.services.defense_ia_client import (
     BRMS_VISITOR,
     BRMS_VISITOR_PAGE,
     BRMS_VISITOR_CONFIG,
+    BRMS_ALARM_SUBSCRIBE,
     DefenseIAClient,
     DefenseIAError,
     DefenseIASettings,
@@ -1770,3 +1771,68 @@ async def test_sync_visitor_retries_on_rate_limit_142016(monkeypatch):
     assert result["data"]["visitorId"] == "99"
     assert posted == 3
     assert sleeps == [1.5, 3.0]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_alarm_push_posts_callback_url():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == BRMS_ALARM_SUBSCRIBE:
+            return httpx.Response(200, json={"code": 1000})
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(
+        settings=brms_settings(alarm_callback_url="https://mw.test/defense/events"),
+        http_client=http_client,
+    )
+    client._token = "tok"
+    try:
+        ok = await client.subscribe_alarm_push()
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert ok is True
+    assert requests[0].url.path == BRMS_ALARM_SUBSCRIBE
+    body = json.loads(requests[0].content.decode())
+    assert body["callbackUrl"] == "https://mw.test/defense/events"
+    assert body["action"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_find_visitor_for_leave_event_matches_page_item():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == BRMS_VISITOR_PAGE:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 1000,
+                    "data": {
+                        "pageData": [
+                            {
+                                "visitorId": "1",
+                                "personId": "9",
+                                "idNum": "12345678900",
+                                "status": "2",
+                                "visitorName": "Maria",
+                            }
+                        ]
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = DefenseIAClient(settings=brms_settings(), http_client=http_client)
+    client._token = "tok"
+    try:
+        found = await client.find_visitor_for_leave_event(id_num="12345678900")
+    finally:
+        await client.close()
+        await http_client.aclose()
+
+    assert found is not None
+    assert found["visitorId"] == "1"

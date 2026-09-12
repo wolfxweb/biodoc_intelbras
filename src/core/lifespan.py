@@ -12,6 +12,7 @@ from src.services.defense_ia_client import (
     SYNC_TARGET_PERSON,
     SYNC_TARGET_VISITOR,
 )
+from src.services.visitor_leave import VisitLeaveSettings
 
 
 def _load_sync_target() -> str:
@@ -46,8 +47,27 @@ def build_defense_client_from_env() -> DefenseIAClient:
         visitor_status=os.getenv("DEFENSE_IA_VISITOR_STATUS", "1"),
         visited_name=os.getenv("DEFENSE_IA_VISITED_NAME", ""),
         visited_org_name=os.getenv("DEFENSE_IA_VISITED_ORG_NAME", ""),
+        alarm_callback_url=resolve_visit_leave_callback_url(),
     )
     return DefenseIAClient(settings=settings)
+
+
+def resolve_visit_leave_callback_url() -> str:
+    explicit = os.getenv("VISIT_LEAVE_CALLBACK_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    base = os.getenv("MIDDLEWARE_URL", "").strip().rstrip("/")
+    if base:
+        return f"{base}/defense/events"
+    return ""
+
+
+def build_visit_leave_settings_from_env() -> VisitLeaveSettings:
+    return VisitLeaveSettings(
+        webhook_url=os.getenv("VISIT_LEAVE_WEBHOOK_URL", "").strip(),
+        webhook_token=os.getenv("VISIT_LEAVE_WEBHOOK_TOKEN", "").strip(),
+        timeout_seconds=float(os.getenv("DEFENSE_IA_TIMEOUT_SECONDS", "10")),
+    )
 
 
 def build_biodoc_client_from_env() -> BiodocClient:
@@ -77,12 +97,19 @@ async def lifespan(app: FastAPI):
 
     app.state.biodoc_client = build_biodoc_client_from_env()
     await app.state.biodoc_client.start()
+    app.state.visit_leave_settings = build_visit_leave_settings_from_env()
     biodoc_configured = bool(os.getenv("BIODOC_TOKEN_API"))
     logger.info(
         "BioDoc client started (api_url=%s, configured=%s, ambiente=%s)",
         os.getenv("BIODOC_API_URL", ""),
         biodoc_configured,
         os.getenv("BIODOC_AMBIENTE", "sandbox"),
+    )
+    leave_settings = app.state.visit_leave_settings
+    logger.info(
+        "Visit leave: callbackUrl=%s webhook=%s",
+        app.state.defense_client.settings.alarm_callback_url or "(vazio)",
+        "on" if leave_settings.forward_enabled else "log-only",
     )
 
     try:

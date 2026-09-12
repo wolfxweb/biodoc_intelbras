@@ -5,7 +5,7 @@ services:
     build: .
     container_name: middleware-biodoc
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8013:8000"
     volumes:
       # Mapeia a pasta de logs do container para o host (para podermos visualizar os arquivos de texto localmente)
       - ./log:/log

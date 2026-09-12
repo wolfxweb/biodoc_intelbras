@@ -58,6 +58,10 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 | `BIODOC_TOKEN_API` | Sim (webhook) | Bearer para `GET /card/integration/mainimage` (TOKEN_API do painel BioDoc). |
 | `BIODOC_WEBHOOK_TOKEN` | Sim (webhook) | Token que o BioDoc envia no header `Authorization` do webhook. Deve corresponder ao valor configurado no painel BioDoc. |
 | `BIODOC_AMBIENTE` | Não | `sandbox` ou `production` — apenas para log/rastreabilidade. |
+| `MIDDLEWARE_URL` | Não | URL pública do middleware. Usada como base do callback de baixa (`/defense/events`). |
+| `VISIT_LEAVE_CALLBACK_URL` | Não | URL que o Defense chama no Event Center. Padrão: `{MIDDLEWARE_URL}/defense/events`. |
+| `VISIT_LEAVE_WEBHOOK_URL` | Não | Destino do JSON da baixa de visita. Vazio = só log em `log/visitor_leave.log`. |
+| `VISIT_LEAVE_WEBHOOK_TOKEN` | Não | Bearer opcional no POST para `VISIT_LEAVE_WEBHOOK_URL`. |
 
 Sem as variáveis do Defense IA, a API sobe com o client desabilitado. Isso permite testar `/status`, documentação OpenAPI e rotas que usam mocks em teste.
 
@@ -397,7 +401,31 @@ pytest
 No Docker Compose:
 
 - `./data` é montado em `/app/data` para persistir o SQLite.
-- `./log` é montado em `/log` para persistir logs diários.
+- `./log` é montado em `/log` para persistir logs diários (`app.log`, `visitor_leave.log` com retenção de 30 dias).
+
+## Baixa de visita (Event Center)
+
+Quando o visitante sai e o Defense dá baixa (`enableAutoLeave`), o middleware:
+
+1. Assina o Event Center no login: `POST /brms/api/v1.1/push-data/alarm/subscribe` com `callbackUrl` = `{MIDDLEWARE_URL}/defense/events`.
+2. Recebe `POST /defense/events`, filtra só saída de visitante.
+3. Grava uma linha JSON em `log/visitor_leave.log` (rotação à meia-noite, 30 arquivos).
+4. Encaminha o mesmo JSON para `VISIT_LEAVE_WEBHOOK_URL` (se preenchida).
+
+Pré-requisito no painel Defense: **Saída automática** ligada nas portas de saída. O servidor Defense precisa alcançar a URL pública do middleware.
+
+```json
+{
+  "event": "visitor_leave",
+  "visitorId": "1842",
+  "visitorName": "Maria Silva",
+  "idNum": "12345678900",
+  "remark": "00271368992672000",
+  "visitedName": "EVB",
+  "leaveTime": "1723994000",
+  "channelId": "1000054$7$0$0"
+}
+```
 
 ## Documentação Interativa
 

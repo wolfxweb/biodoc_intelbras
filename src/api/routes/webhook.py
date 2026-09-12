@@ -1,16 +1,18 @@
 """GET/POST /biodoc — callback BioDoc (url=) e ingress Intelbras (log)."""
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from src.api.biodoc_success_page import render_unimed_error_page, render_unimed_success_page
-from src.api.dependencies import get_biodoc_client, get_defense_client
+from src.api.dependencies import get_biodoc_client, get_defense_client, get_visit_leave_settings
+from src.core.logging import logger
 from src.core.webhook_query import parse_biodoc_redirect_query
 from src.services.biodoc_client import BiodocClient
 from src.services.defense_callback_service import process_defense_biodoc_callback
 from src.services.defense_ia_client import DefenseIAClient
+from src.services.visitor_leave import VisitLeaveSettings, process_visitor_leave_body
 
 router = APIRouter(
     tags=["webhook"],
@@ -96,3 +98,34 @@ async def webhook_biodoc_callback(
 async def webhook_biodoc_ingress(request: Request) -> dict[str, str]:
     _ = request
     return {"status": "ok"}
+
+
+@router.post(
+    "/defense/events",
+    summary="Callback Event Center — baixa de visita",
+    description=(
+        "Recebe o push do Defense IA (`push-data/alarm/subscribe`). "
+        "Filtra saída de visitante, grava `log/visitor_leave.log` e "
+        "encaminha JSON para `VISIT_LEAVE_WEBHOOK_URL`. Sem autenticação."
+    ),
+)
+async def defense_event_ingress(
+    request: Request,
+    defense_client: Annotated[DefenseIAClient, Depends(get_defense_client)],
+    visit_leave_settings: Annotated[
+        VisitLeaveSettings, Depends(get_visit_leave_settings)
+    ],
+) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        return await process_visitor_leave_body(
+            body,
+            defense_client=defense_client,
+            settings=visit_leave_settings,
+        )
+    except Exception as exc:
+        logger.exception("[VISIT_LEAVE] falha ao processar evento: %s", exc)
+        return {"status": "ok", "processed": 0, "skipped": 0, "forwarded": 0, "error": True}

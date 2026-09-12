@@ -27,3 +27,4 @@ async def test_status_reports_defense_and_biodoc(
     assert body["defense_ia"]["api_mode"] == "brms"
     assert body["biodoc"]["configured"] is True
     assert body["biodoc"]["ambiente"] == "sandbox"
+    assert "visit_leave" in body
