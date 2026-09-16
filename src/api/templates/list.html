@@ -9,26 +9,20 @@
     * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      margin: 0; background: var(--bg); color: var(--text-dark);
+      margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+      background: var(--bg); color: var(--text-dark);
     }
-    header {
-      background: #fff; border-bottom: 1px solid #e8e8e8; border-top: 4px solid var(--green);
-      padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; gap: 12px;
-    }
+    {% include "navbar_styles.html" %}
     h1 { margin: 0; font-size: 1.2rem; }
-    .wrap { max-width: 1200px; margin: 0 auto; padding: 20px 24px 48px; }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 20px 24px 48px; width: 100%; flex: 1; }
     .card { background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 2px 12px rgba(0,0,0,.05); margin-bottom: 16px; }
-    form.filters, form.settings { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
     label { display: block; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: #888; margin-bottom: 4px; }
     input[type=text], input[type=date], input[type=url] {
-      padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; min-width: 160px;
+      width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 999px; min-width: 0;
     }
-    input[type=url] { min-width: 320px; flex: 1; }
-    button, .btn {
-      background: var(--green); color: #fff; border: 0; border-radius: 8px; padding: 9px 14px;
-      font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block;
-    }
-    button.secondary, .btn.secondary { background: #eee; color: #333; }
+    .filter-actions { display: flex; gap: 8px; width: 100%; }
+    .filter-actions button, .filter-actions .btn { flex: 1; }
+    .settings .col-2 button { width: 100%; }
     .toast {
       position: fixed; right: 20px; bottom: 20px; z-index: 20;
       background: var(--green); color: #fff; border-radius: 10px;
@@ -48,43 +42,53 @@
     pre { margin: 0; padding: 16px; overflow: auto; font-size: .8rem; background: #111; color: #e8e8e8; border-radius: 0 0 12px 12px; }
     .modal-h { padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; }
     .muted { color: #888; }
+    .site-footer {
+      padding: 16px 24px; text-align: center; background: #fff; border-top: 1px solid #e8e8e8;
+      color: #18181b; font-size: .875rem;
+    }
+    .site-footer p { margin: 0; }
+    .site-footer a { color: #18181b; font-weight: 600; text-decoration: none; }
+    .site-footer a:hover { color: var(--green); text-decoration: underline; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Baixas de visita</h1>
-    <form method="post" action="/logout"><button class="secondary" type="submit">Sair</button></form>
-  </header>
+  {% set nav_active = "baixas" %}
+  {% set page_title = "Baixas de visita" %}
+  {% include "navbar.html" %}
   <div class="wrap">
     <div class="card">
-      <form class="settings" method="post" action="/settings/webhook-url">
-        <div style="flex:1; min-width: 280px;">
-          <label for="webhook_url">URL de destino (POST da baixa)</label>
+      <form class="settings grid-12" method="post" action="/settings/webhook-url">
+        <div class="col-10">
+          <label for="webhook_url">URL de destino</label>
           <input id="webhook_url" name="webhook_url" type="url" value="{{ webhook_url }}" placeholder="https://...">
         </div>
-        <button type="submit">Salvar URL</button>
+        <div class="col-2">
+          <button type="submit">Salvar URL</button>
+        </div>
       </form>
     </div>
     <div class="card">
-      <form class="filters" method="get" action="/">
-        <div>
+      <form class="filters grid-12" method="get" action="/">
+        <div class="col-3">
           <label for="name">Visitante</label>
           <input id="name" name="name" type="text" value="{{ name }}">
         </div>
-        <div>
+        <div class="col-3">
           <label for="setor">Setor</label>
           <input id="setor" name="setor" type="text" value="{{ setor }}">
         </div>
-        <div>
+        <div class="col-2">
           <label for="from">Saída de</label>
           <input id="from" name="from" type="date" value="{{ date_from }}">
         </div>
-        <div>
+        <div class="col-2">
           <label for="to">Saída até</label>
           <input id="to" name="to" type="date" value="{{ date_to }}">
         </div>
-        <button type="submit">Filtrar</button>
-        <a class="btn secondary" href="/">Limpar</a>
+        <div class="col-2 filter-actions">
+          <button type="submit">Filtrar</button>
+          <a class="btn secondary" href="/">Limpar</a>
+        </div>
       </form>
     </div>
     <p class="muted">{{ total }} registro(s)</p>
@@ -96,7 +100,7 @@
           <th>Documento</th>
           <th>Setor</th>
           <th>Chegada</th>
-          <th>Enviado</th>
+          <th>Enviado para URL destino</th>
         </tr>
       </thead>
       <tbody>
@@ -152,5 +156,6 @@
     history.replaceState({}, "", "/");
     {% endif %}
   </script>
+  {% include "footer.html" %}
 </body>
 </html>

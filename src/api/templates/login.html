@@ -9,9 +9,13 @@
     * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      margin: 0; min-height: 100vh; display: flex; flex-direction: column;
       background: var(--bg); color: var(--text-dark);
     }
+    .login-main {
+      flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    {% include "navbar_styles.html" %}
     .card {
       width: 100%; max-width: 380px; background: #fff; border-radius: 12px;
       padding: 36px 28px; box-shadow: 0 4px 24px rgba(0,0,0,.08); border-top: 5px solid var(--green);
@@ -20,17 +24,31 @@
     p { margin: 0 0 20px; color: #555; font-size: .95rem; }
     label { display: block; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: #888; margin-bottom: 6px; }
     input[type=password] {
-      width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1rem; margin-bottom: 16px;
+      width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 999px; font-size: 1rem; margin-bottom: 16px;
     }
-    button {
-      width: 100%; background: var(--green); color: #fff; border: 0; border-radius: 8px;
-      padding: 11px; font-size: 1rem; font-weight: 600; cursor: pointer;
-    }
-    button:hover { background: var(--dark-green); }
+    .card button { width: 100%; }
     .error { color: #b42318; font-size: .9rem; margin-bottom: 12px; }
+    .site-footer {
+      padding: 16px 24px; text-align: center; background: #fff; border-top: 1px solid #e8e8e8;
+      color: #18181b; font-size: .875rem;
+    }
+    .site-footer p { margin: 0; color: #18181b; }
+    .site-footer a { color: #18181b; font-weight: 600; text-decoration: none; }
+    .site-footer a:hover { color: var(--green); text-decoration: underline; }
   </style>
 </head>
 <body>
+  <header class="topbar">
+    <div class="topbar-bar"></div>
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-name">Unimed</span>
+        <span class="brand-sep" aria-hidden="true"></span>
+        <span class="brand-page">Baixas de visita</span>
+      </div>
+    </div>
+  </header>
+  <div class="login-main">
   <form class="card" method="post" action="/login">
     <h1>Baixas de visita</h1>
     <p>Entre para ver o histórico registrado neste middleware.</p>
@@ -41,5 +59,7 @@
     <input id="password" name="password" type="password" autofocus required>
     <button type="submit">Entrar</button>
   </form>
+  </div>
+  {% include "footer.html" %}
 </body>
 </html>

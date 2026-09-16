@@ -1,0 +1,18 @@
+<header class="topbar">
+  <div class="topbar-bar"></div>
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-name">Unimed</span>
+      <span class="brand-sep" aria-hidden="true"></span>
+      <span class="brand-page">{{ page_title }}</span>
+    </a>
+    <nav class="top-nav" aria-label="Principal">
+      <a href="/" class="{% if nav_active == 'baixas' %}is-active{% endif %}">Baixas</a>
+      <a href="/manuais" class="{% if nav_active == 'manuais' %}is-active{% endif %}">Manuais</a>
+      <a href="/docs" target="_blank" rel="noopener noreferrer">Docs</a>
+      <form class="logout-form" method="post" action="/logout">
+        <button type="submit">Sair</button>
+      </form>
+    </nav>
+  </div>
+</header>

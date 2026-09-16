@@ -46,6 +46,9 @@ build/
 # Documentação Markdown em docs/ (local; não versionar)
 docs/*.md
 docs/**/*.md
+# Manuais exibidos na tela autenticada GET /manuais
+!docs/MANUAL_URL_DESTINO_BAIXA.md
+!docs/VISIT_LEAVE_WEBHOOK.md
 
 # SDK e documentação binária da Intelbras (grandes e não-versionáveis)
 # Observação: as pastas docs/Defense IA - API e docs/Defense IA - SDK são versionadas

@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, TimestampSigner
 from sqlalchemy.orm import Session
 
+from src.api.manuals import get_manual, list_manuals, render_manual
 from src.core.database import get_db
 from src.models.visitor_leave import VisitorLeaveEvent
 from src.services.visitor_leave_store import format_unix, get_webhook_url, set_webhook_url
@@ -195,3 +196,32 @@ async def save_webhook_url(
         return RedirectResponse("/login", status_code=303)
     set_webhook_url(webhook_url, db=db)
     return RedirectResponse("/?saved=1", status_code=303)
+
+
+@router.get("/manuais", response_class=HTMLResponse, response_model=None)
+async def manuals_index(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return RedirectResponse("/login", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "manuals.html",
+        {"manuals": list_manuals(), "manual": None, "body_html": ""},
+    )
+
+
+@router.get("/manuais/{slug}", response_class=HTMLResponse, response_model=None)
+async def manuals_detail(request: Request, slug: str) -> Response:
+    if not _is_authenticated(request):
+        return RedirectResponse("/login", status_code=303)
+    manual = get_manual(slug)
+    if manual is None:
+        return RedirectResponse("/manuais", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "manuals.html",
+        {
+            "manuals": list_manuals(),
+            "manual": manual,
+            "body_html": render_manual(manual),
+        },
+    )

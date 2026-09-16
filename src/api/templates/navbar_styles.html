@@ -1,0 +1,52 @@
+    .topbar { background: #fff; border-bottom: 1px solid #e6eee9; }
+    .topbar-bar { height: 4px; background: var(--green); }
+    .topbar-inner {
+      max-width: 1200px; margin: 0 auto; padding: 12px 24px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; min-width: 0;
+    }
+    .brand-name {
+      color: var(--green); font-weight: 800; font-size: 1.35rem; letter-spacing: -.02em; line-height: 1;
+    }
+    .brand-sep { width: 1px; height: 22px; background: #d6e6dc; flex-shrink: 0; }
+    .brand-page { color: #5a5a5a; font-size: .95rem; font-weight: 500; }
+    .top-nav { display: flex; align-items: center; gap: 2px; }
+    .top-nav a {
+      color: #555; text-decoration: none; font-weight: 600; font-size: .9rem;
+      padding: 8px 14px; border-radius: 999px;
+    }
+    .top-nav a:hover { background: #f3fbf6; color: var(--dark-green); }
+    .top-nav a.is-active { background: #e8f6ef; color: var(--dark-green); }
+    .logout-form { margin: 0 0 0 6px; }
+    button, .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      font-family: inherit; font-weight: 600; font-size: .9rem;
+      padding: 8px 14px; border-radius: 999px; cursor: pointer;
+      text-decoration: none; border: 1px solid var(--green);
+      background: var(--green); color: #fff;
+    }
+    button:hover, .btn:hover { background: var(--dark-green); border-color: var(--dark-green); }
+    button.secondary, .btn.secondary,
+    .logout-form button {
+      background: #fff; color: #555; border-color: #d8d8d8;
+    }
+    button.secondary:hover, .btn.secondary:hover,
+    .logout-form button:hover {
+      border-color: var(--green); color: var(--dark-green); background: #f3fbf6;
+    }
+    .grid-12 {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 12px;
+      align-items: end;
+      width: 100%;
+    }
+    .col-2 { grid-column: span 2; }
+    .col-3 { grid-column: span 3; }
+    .col-10 { grid-column: span 10; }
+    .col-12 { grid-column: span 12; }
+    @media (max-width: 800px) {
+      .col-2, .col-3, .col-10 { grid-column: span 12; }
+    }

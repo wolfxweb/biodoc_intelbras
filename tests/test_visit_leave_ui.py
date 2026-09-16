@@ -59,6 +59,11 @@ async def test_login_sets_cookie_and_lists_events(
     assert denied.status_code == 303
     assert denied.headers["location"] == "/login?error=1"
 
+    login_page = await api_client.get("/login")
+    assert "Desenvolvido por" in login_page.text
+    assert "Unimed" in login_page.text
+    assert 'href="https://wolfx.com.br"' in login_page.text
+
     ok = await _login(api_client)
     assert ok.status_code == 303
     assert ok.headers["location"] == "/"
@@ -66,9 +71,14 @@ async def test_login_sets_cookie_and_lists_events(
 
     listed = await api_client.get("/")
     assert listed.status_code == 200
+    assert "Unimed" in listed.text
     assert "Maria Silva" in listed.text
+    assert "wolfx.com.br" in listed.text
+    assert 'href="https://wolfx.com.br"' in listed.text
     assert "EVB" in listed.text
+    assert "Enviado para URL destino" in listed.text
     assert "URL de destino" in listed.text
+    assert 'href="/docs"' in listed.text
 
 
 @pytest.mark.asyncio
@@ -115,6 +125,27 @@ async def test_save_webhook_url(
     assert response.status_code == 303
     assert "saved=1" in response.headers["location"]
     assert get_setting(WEBHOOK_URL_SETTING_KEY, db=db_session) == "https://example.test/hook"
+
+
+@pytest.mark.asyncio
+async def test_manuals_require_login_and_render_existing_docs(
+    api_client: httpx.AsyncClient,
+) -> None:
+    denied = await api_client.get("/manuais", follow_redirects=False)
+    assert denied.status_code == 303
+    assert denied.headers["location"] == "/login"
+
+    await _login(api_client)
+    index = await api_client.get("/manuais")
+    assert index.status_code == 200
+    assert "Middleware BIODOC" in index.text
+    assert "Webhook opcional de baixa de visita" in index.text
+    assert "URL de destino da baixa de visita" in index.text
+
+    detail = await api_client.get("/manuais/middleware")
+    assert detail.status_code == 200
+    assert "Intelbras Defense IA" in detail.text
+    assert "<h1>" in detail.text
 
 
 @pytest.mark.asyncio
