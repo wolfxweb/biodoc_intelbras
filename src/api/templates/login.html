@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login — baixas de visita</title>
+  <style>
+    :root { --green: #00995A; --dark-green: #007f4a; --text-dark: #333; --bg: #f9f9f9; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: var(--bg); color: var(--text-dark);
+    }
+    .card {
+      width: 100%; max-width: 380px; background: #fff; border-radius: 12px;
+      padding: 36px 28px; box-shadow: 0 4px 24px rgba(0,0,0,.08); border-top: 5px solid var(--green);
+    }
+    h1 { margin: 0 0 8px; font-size: 1.35rem; }
+    p { margin: 0 0 20px; color: #555; font-size: .95rem; }
+    label { display: block; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: #888; margin-bottom: 6px; }
+    input[type=password] {
+      width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1rem; margin-bottom: 16px;
+    }
+    button {
+      width: 100%; background: var(--green); color: #fff; border: 0; border-radius: 8px;
+      padding: 11px; font-size: 1rem; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: var(--dark-green); }
+    .error { color: #b42318; font-size: .9rem; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <form class="card" method="post" action="/login">
+    <h1>Baixas de visita</h1>
+    <p>Entre para ver o histórico registrado neste middleware.</p>
+    {% if error %}
+    <div class="error">Senha inválida.</div>
+    {% endif %}
+    <label for="password">Senha</label>
+    <input id="password" name="password" type="password" autofocus required>
+    <button type="submit">Entrar</button>
+  </form>
+</body>
+</html>

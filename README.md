@@ -58,10 +58,11 @@ O arquivo `.env` fica na raiz do projeto (ignorado pelo Git). Em desenvolvimento
 | `BIODOC_TOKEN_API` | Sim (webhook) | Bearer para `GET /card/integration/mainimage` (TOKEN_API do painel BioDoc). |
 | `BIODOC_WEBHOOK_TOKEN` | Sim (webhook) | Token que o BioDoc envia no header `Authorization` do webhook. Deve corresponder ao valor configurado no painel BioDoc. |
 | `BIODOC_AMBIENTE` | Não | `sandbox` ou `production` — apenas para log/rastreabilidade. |
-| `MIDDLEWARE_URL` | Não | URL pública do middleware. Usada como base do callback de baixa (`/defense/events`). |
-| `VISIT_LEAVE_CALLBACK_URL` | Não | URL que o Defense chama no Event Center. Padrão: `{MIDDLEWARE_URL}/defense/events`. |
-| `VISIT_LEAVE_WEBHOOK_URL` | Não | Destino do JSON da baixa de visita. Vazio = só log em `log/visitor_leave.log`. |
+| `MIDDLEWARE_URL` | Não | URL pública do middleware. |
+| `VISIT_LEAVE_WEBHOOK_URL` | Não | Destino opcional do JSON da baixa. Vazio = só log em `log/visitor_leave.log` e tela `GET /`. |
 | `VISIT_LEAVE_WEBHOOK_TOKEN` | Não | Bearer opcional no POST para `VISIT_LEAVE_WEBHOOK_URL`. |
+| `VISIT_LEAVE_POLL_SECONDS` | Não | Intervalo do polling oficial (`status=2`). Executa também no startup. Padrão `60`; `0` desliga. |
+| `VISIT_LEAVE_STATE_PATH` | Não | Arquivo JSON com watermark e deduplicação persistentes. Padrão `data/visitor_leave_state.json`. |
 
 Sem as variáveis do Defense IA, a API sobe com o client desabilitado. Isso permite testar `/status`, documentação OpenAPI e rotas que usam mocks em teste.
 
@@ -403,16 +404,17 @@ No Docker Compose:
 - `./data` é montado em `/app/data` para persistir o SQLite.
 - `./log` é montado em `/log` para persistir logs diários (`app.log`, `visitor_leave.log` com retenção de 30 dias).
 
-## Baixa de visita (Event Center)
+## Baixa de visita pelo histórico oficial
 
-Quando o visitante sai e o Defense dá baixa (`enableAutoLeave`), o middleware:
+Quando o visitante recebe baixa no Defense (saída por catraca, horário ou manual), o middleware:
 
-1. Assina o Event Center no login: `POST /brms/api/v1.1/push-data/alarm/subscribe` com `callbackUrl` = `{MIDDLEWARE_URL}/defense/events`.
-2. Recebe `POST /defense/events`, filtra só saída de visitante.
-3. Grava uma linha JSON em `log/visitor_leave.log` (rotação à meia-noite, 30 arquivos).
-4. Encaminha o mesmo JSON para `VISIT_LEAVE_WEBHOOK_URL` (se preenchida).
+1. Consulta imediatamente no startup e depois a cada `VISIT_LEAVE_POLL_SECONDS` (padrão 1 min) o endpoint `GET /obms/api/v1.1/visitor/history/record/page?status=2`, com janela de chegada de 7 dias (o Defense filtra `startTime` pela chegada, não pela saída).
+2. Aceita somente registros com `status=2`, `visitorId` e `leaveTime` válidos.
+3. Deduplica por `visitorId|leaveTime` no arquivo persistente `data/visitor_leave_state.json`.
+4. Para cada registro novo, grava uma linha JSON em `log/visitor_leave.log` (rotação à meia-noite, retenção de 30 dias), sempre com `"trigger": "poll"`.
+5. Somente para esse registro novo, encaminha o mesmo JSON para `VISIT_LEAVE_WEBHOOK_URL`, se a URL estiver preenchida. URL vazia mantém apenas o log local e a tela `GET /`.
 
-Pré-requisito no painel Defense: **Saída automática** ligada nas portas de saída. O servidor Defense precisa alcançar a URL pública do middleware.
+Não é necessário configurar canal, evento ou callback no painel Defense. A rota legada `POST /defense/events` continua respondendo HTTP 200, mas não cria baixas.
 
 ```json
 {
@@ -423,7 +425,8 @@ Pré-requisito no painel Defense: **Saída automática** ligada nas portas de sa
   "remark": "00271368992672000",
   "visitedName": "EVB",
   "leaveTime": "1723994000",
-  "channelId": "1000054$7$0$0"
+  "channelId": null,
+  "trigger": "poll"
 }
 ```
 

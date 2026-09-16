@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 from src.api.dependencies import get_biodoc_client, get_defense_client
 from src.core.database import Base, get_db
 from src.main import app
+from src.models.visitor_leave import AppSetting, VisitorLeaveEvent  # noqa: F401
 
 
 SQLALCHEMY_DATABASE_URL = "sqlite://"
@@ -58,6 +59,7 @@ def defense_client_mock() -> AsyncMock:
     client.token = "mock-token"
     client.is_ready = True
     client.find_visitor_for_leave_event = AsyncMock(return_value=None)
+    client.find_finalized_visitor_for_leave_event = AsyncMock(return_value=None)
     client.subscribe_alarm_push = AsyncMock(return_value=True)
     return client
 

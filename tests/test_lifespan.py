@@ -43,6 +43,12 @@ async def test_lifespan_starts_and_closes_defense_client(monkeypatch):
     monkeypatch.setattr(lifespan_module, "build_defense_client_from_env", lambda: fake_defense)
     monkeypatch.setattr(lifespan_module, "build_biodoc_client_from_env", lambda: fake_biodoc)
 
+    monkeypatch.setenv("VISIT_LEAVE_POLL_SECONDS", "0")
+    monkeypatch.setattr(lifespan_module, "init_visit_leave_db", lambda: None)
+    monkeypatch.setattr(lifespan_module, "import_visitor_leave_logs_if_empty", lambda: 0)
+    monkeypatch.setattr(lifespan_module, "get_webhook_url", lambda url="": url)
+    monkeypatch.setattr(lifespan_module, "set_webhook_url", lambda url: None)
+
     app = FastAPI()
 
     async with lifespan_module.lifespan(app):
@@ -55,12 +61,11 @@ async def test_lifespan_starts_and_closes_defense_client(monkeypatch):
     assert fake_biodoc.closed is True
 
 
-def test_resolve_visit_leave_callback_url_uses_middleware(monkeypatch):
-    monkeypatch.delenv("VISIT_LEAVE_CALLBACK_URL", raising=False)
-    monkeypatch.setenv("MIDDLEWARE_URL", "https://un.celx.com.br")
-    assert (
-        lifespan_module.resolve_visit_leave_callback_url()
-        == "https://un.celx.com.br/defense/events"
-    )
-    monkeypatch.setenv("VISIT_LEAVE_CALLBACK_URL", "https://un.celx.com.br/custom")
-    assert lifespan_module.resolve_visit_leave_callback_url() == "https://un.celx.com.br/custom"
+def test_visit_leave_settings_use_history_polling_defaults(monkeypatch):
+    monkeypatch.delenv("VISIT_LEAVE_POLL_SECONDS", raising=False)
+    monkeypatch.delenv("VISIT_LEAVE_WEBHOOK_URL", raising=False)
+
+    settings = lifespan_module.build_visit_leave_settings_from_env()
+
+    assert settings.poll_interval_seconds == 60
+    assert settings.forward_enabled is False

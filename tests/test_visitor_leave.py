@@ -1,216 +1,339 @@
+import asyncio
 import json
-import logging
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 
 from src.api.dependencies import get_visit_leave_settings
 from src.main import app
+from src.services.defense_ia_client import DefenseIAClient, DefenseIASettings
+from src.services import visitor_leave as visitor_leave_module
 from src.services.visitor_leave import (
     VisitLeaveSettings,
     build_leave_payload,
-    extract_event_lookup_keys,
-    is_exit_direction,
-    is_visitor_leave_event,
-    iter_event_records,
+    is_finalized_visitor,
+    poll_visitor_leave_history,
     process_visitor_leave_body,
-    reset_leave_dedup,
-    unwrap_event_record,
+    visitor_leave_poll_loop,
 )
 
 
 @pytest.fixture(autouse=True)
-def _reset_dedup() -> None:
-    reset_leave_dedup()
-    yield
-    reset_leave_dedup()
+def _noop_sqlite(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(visitor_leave_module, "persist_visitor_leave", lambda *a, **k: True)
+    monkeypatch.setattr(visitor_leave_module, "get_webhook_url", lambda url="": url)
 
 
-def test_iter_and_unwrap_nested_alarm() -> None:
-    body = {
-        "data": {
-            "personId": "99",
-            "inAndOut": "2",
-            "channelId": "1000054$7$0$0",
-        }
-    }
-    records = iter_event_records(body)
-    assert len(records) == 1
-    flat = unwrap_event_record(records[0])
-    lookup = extract_event_lookup_keys(flat)
-    assert lookup["person_id"] == "99"
-    assert is_exit_direction(flat) is True
-
-
-def test_is_visitor_leave_requires_visitor_and_exit() -> None:
-    visitor = {"visitorId": "1", "status": "1", "leaveTime": "0"}
-    assert is_visitor_leave_event({"inAndOut": "2"}, visitor) is True
-    assert is_visitor_leave_event({"inAndOut": "1"}, visitor) is False
-    assert is_visitor_leave_event({"inAndOut": "2"}, None) is False
-    left = {"visitorId": "1", "status": "2", "leaveTime": "123"}
-    assert is_visitor_leave_event({}, left) is True
-
-
-def test_build_leave_payload_omits_face() -> None:
-    visitor = {
-        "visitorId": "1842",
-        "personId": "90011",
-        "status": "2",
+def _visitor(
+    visitor_id: str = "1842",
+    leave_time: str = "1000000",
+    *,
+    status: str = "2",
+) -> dict:
+    return {
+        "visitorId": visitor_id,
+        "personId": "p-1842",
+        "status": status,
         "visitorName": "Maria Silva",
         "idNum": "12345678900",
-        "remark": "00271368992672000",
-        "visitedName": "EVB",
-        "arrivalTime": "1692361501",
-        "expectLeaveTime": "1723994674",
-        "leaveTime": "1723994000",
+        "arrivalTime": "999000",
+        "leaveTime": leave_time,
         "authInfo": {"cardNo": "0C987123", "facePictures": ["AAAA"]},
     }
-    payload = build_leave_payload(
-        visitor=visitor,
-        record={"channelId": "1000054$7$0$0"},
-        lookup=extract_event_lookup_keys({"channelId": "1000054$7$0$0"}),
-    )
+
+
+def _defense(*visitors: dict) -> AsyncMock:
+    defense = AsyncMock()
+    defense.settings = SimpleNamespace(enabled=True)
+    defense.iter_finalized_visitors_between = AsyncMock(return_value=list(visitors))
+    return defense
+
+
+def test_build_leave_payload_uses_only_history_fields() -> None:
+    payload = build_leave_payload(_visitor())
+
     assert payload["event"] == "visitor_leave"
     assert payload["visitorId"] == "1842"
-    assert payload["remark"] == "00271368992672000"
+    assert payload["leaveTime"] == "1000000"
+    assert payload["trigger"] == "poll"
+    assert payload["channelId"] is None
     assert "facePictures" not in payload
-    assert payload["channelId"] == "1000054$7$0$0"
 
 
-def test_visitor_leave_log_writes_json_line(tmp_path) -> None:
-    from src.services.visitor_leave import log_visitor_leave
-
-    log_path = tmp_path / "visitor_leave.log"
-    handler = logging.FileHandler(log_path, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    leave_logger = logging.getLogger("biodoc_intelbras.visitor_leave")
-    previous = list(leave_logger.handlers)
-    leave_logger.handlers = [handler]
-    try:
-        log_visitor_leave({"event": "visitor_leave", "visitorId": "1"})
-        handler.flush()
-        parsed = json.loads(log_path.read_text(encoding="utf-8").strip())
-        assert parsed["visitorId"] == "1"
-    finally:
-        leave_logger.handlers = previous
-        handler.close()
+@pytest.mark.parametrize(
+    ("status", "leave_time", "expected"),
+    [
+        ("2", "1000000", True),
+        ("2", "0", False),
+        ("2", "", False),
+        ("4", "1000000", False),
+        ("1", "1000000", False),
+    ],
+)
+def test_finalized_visitor_requires_status_2_and_leave_time(
+    status: str,
+    leave_time: str,
+    expected: bool,
+) -> None:
+    assert is_finalized_visitor(_visitor(status=status, leave_time=leave_time)) is expected
 
 
 @pytest.mark.asyncio
-async def test_process_forwards_and_skips_staff(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_generic_alarm_is_always_ignored() -> None:
     defense = AsyncMock()
-    defense.find_visitor_for_leave_event = AsyncMock(
-        side_effect=[
-            {
-                "visitorId": "1",
-                "personId": "9",
-                "status": "2",
-                "visitorName": "Maria",
-                "idNum": "123",
-                "leaveTime": "100",
-                "remark": "card1",
-            },
-            None,
-        ]
+    result = await process_visitor_leave_body(
+        {
+            "sourceName": "ACESSO SERVIÇO SAIDA",
+            "alarmType": "13104",
+            "remark": '{"userId":"12345678901"}',
+        },
+        defense_client=defense,
+        settings=VisitLeaveSettings(webhook_url="https://example.test/hook"),
     )
+
+    assert result == {
+        "status": "ignored",
+        "processed": 0,
+        "skipped": 1,
+        "forwarded": 0,
+    }
+    defense.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_poll_logs_and_posts_only_new_record(tmp_path, monkeypatch) -> None:
+    state_path = tmp_path / "visitor_leave_state.json"
+    defense = _defense(_visitor())
+    logged: list[dict] = []
+    forward = AsyncMock(return_value=True)
+    monkeypatch.setattr(visitor_leave_module.time, "time", lambda: 1_000_100)
+    monkeypatch.setattr(visitor_leave_module, "log_visitor_leave", logged.append)
+    monkeypatch.setattr(visitor_leave_module, "forward_visitor_leave", forward)
     settings = VisitLeaveSettings(
-        webhook_url="https://destino.test/baixa",
-        webhook_token="tok",
-        timeout_seconds=2.0,
+        webhook_url="https://example.test/hook",
+        state_path=str(state_path),
     )
-    captured: dict[str, object] = {}
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["body"] = json.loads(request.content.decode())
-        captured["auth"] = request.headers.get("authorization")
-        return httpx.Response(200, json={"ok": True})
-
-    real_async_client = httpx.AsyncClient
-
-    class _FakeAsyncClient:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            self._client = real_async_client(transport=httpx.MockTransport(handler))
-
-        async def __aenter__(self) -> httpx.AsyncClient:
-            return self._client
-
-        async def __aexit__(self, *args: object) -> None:
-            await self._client.aclose()
-
-    monkeypatch.setattr("src.services.visitor_leave.httpx.AsyncClient", _FakeAsyncClient)
-
-    first = await process_visitor_leave_body(
-        {"personId": "9", "inAndOut": "2"},
+    first = await poll_visitor_leave_history(
         defense_client=defense,
         settings=settings,
     )
-    second = await process_visitor_leave_body(
-        {"personId": "staff", "inAndOut": "2"},
+    second = await poll_visitor_leave_history(
         defense_client=defense,
         settings=settings,
     )
+
     assert first["processed"] == 1
     assert first["forwarded"] == 1
     assert second["processed"] == 0
-    assert captured["url"] == "https://destino.test/baixa"
-    assert captured["auth"] == "Bearer tok"
-    assert captured["body"]["visitorId"] == "1"
+    assert len(logged) == 1
+    forward.assert_awaited_once()
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["version"] == 2
+    assert state["last_poll_ts"] == 1_000_100
+    assert state["emitted"] == {"1842|1000000": 1000000}
+    assert not (tmp_path / ".visitor_leave_state.json.tmp").exists()
 
 
 @pytest.mark.asyncio
-async def test_process_deduplicates_same_leave() -> None:
-    defense = AsyncMock()
-    defense.find_visitor_for_leave_event = AsyncMock(
-        return_value={
-            "visitorId": "1",
-            "personId": "9",
-            "status": "2",
-            "leaveTime": "100",
-            "visitorName": "Maria",
-        }
+async def test_persistent_state_deduplicates_after_restart(tmp_path, monkeypatch) -> None:
+    state_path = tmp_path / "visitor_leave_state.json"
+    monkeypatch.setattr(visitor_leave_module.time, "time", lambda: 1_000_100)
+    log = Mock()
+    forward = AsyncMock(return_value=True)
+    monkeypatch.setattr(visitor_leave_module, "log_visitor_leave", log)
+    monkeypatch.setattr(visitor_leave_module, "forward_visitor_leave", forward)
+    settings = VisitLeaveSettings(
+        webhook_url="https://example.test/hook",
+        state_path=str(state_path),
     )
-    settings = VisitLeaveSettings()
-    first = await process_visitor_leave_body(
-        {"personId": "9", "inAndOut": "2"},
-        defense_client=defense,
+
+    await poll_visitor_leave_history(
+        defense_client=_defense(_visitor()),
         settings=settings,
     )
-    second = await process_visitor_leave_body(
-        {"personId": "9", "inAndOut": "2"},
-        defense_client=defense,
+    restarted = await poll_visitor_leave_history(
+        defense_client=_defense(_visitor()),
         settings=settings,
     )
-    assert first["processed"] == 1
-    assert second["processed"] == 0
-    assert second["skipped"] == 1
+
+    assert restarted["processed"] == 0
+    log.assert_called_once()
+    forward.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_defense_events_route_returns_ok(
-    api_client: httpx.AsyncClient,
-    defense_client_mock: AsyncMock,
+async def test_empty_webhook_url_logs_without_post(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(visitor_leave_module.time, "time", lambda: 1_000_100)
+    logged: list[dict] = []
+    monkeypatch.setattr(visitor_leave_module, "log_visitor_leave", logged.append)
+    settings = VisitLeaveSettings(state_path=str(tmp_path / "state.json"))
+
+    result = await poll_visitor_leave_history(
+        defense_client=_defense(_visitor()),
+        settings=settings,
+    )
+
+    assert result["processed"] == 1
+    assert result["forwarded"] == 0
+    assert len(logged) == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_failure_does_not_advance_watermark(tmp_path, monkeypatch) -> None:
+    state_path = tmp_path / "state.json"
+    original = {"version": 2, "last_poll_ts": 900000, "emitted": {}}
+    state_path.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(visitor_leave_module.time, "time", lambda: 1_000_100)
+    defense = _defense()
+    defense.iter_finalized_visitors_between.side_effect = RuntimeError("offline")
+
+    result = await poll_visitor_leave_history(
+        defense_client=defense,
+        settings=VisitLeaveSettings(state_path=str(state_path)),
+    )
+
+    assert result["status"] == "error"
+    assert json.loads(state_path.read_text(encoding="utf-8")) == original
+
+
+@pytest.mark.asyncio
+async def test_poll_queries_arrival_lookback_not_last_poll(tmp_path, monkeypatch) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"version": 2, "last_poll_ts": 1_000_050, "emitted": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(visitor_leave_module.time, "time", lambda: 1_000_100)
+    defense = _defense()
+
+    await poll_visitor_leave_history(
+        defense_client=defense,
+        settings=VisitLeaveSettings(state_path=str(state_path)),
+    )
+
+    args = defense.iter_finalized_visitors_between.await_args.args
+    assert args[0] == 1_000_100 - visitor_leave_module.HISTORY_LOOKBACK_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_poll_emits_leave_when_visitor_arrived_hours_earlier(
+    tmp_path, monkeypatch
 ) -> None:
-    defense_client_mock.find_visitor_for_leave_event = AsyncMock(
-        return_value={
-            "visitorId": "7",
-            "personId": "8",
-            "status": "2",
-            "leaveTime": "55",
-            "visitorName": "Joao",
-            "idNum": "111",
-        }
+    monkeypatch.setattr(visitor_leave_module.time, "time", lambda: 1_000_100)
+    logged: list[dict] = []
+    monkeypatch.setattr(visitor_leave_module, "log_visitor_leave", logged.append)
+    visitor = _visitor(leave_time="1000090")
+    visitor["arrivalTime"] = "990000"
+
+    result = await poll_visitor_leave_history(
+        defense_client=_defense(visitor),
+        settings=VisitLeaveSettings(state_path=str(tmp_path / "state.json")),
     )
+
+    assert result["processed"] == 1
+    assert logged[0]["visitorId"] == "1842"
+
+
+@pytest.mark.asyncio
+async def test_history_pagination_uses_pages_of_100() -> None:
+    client = DefenseIAClient(
+        DefenseIASettings(
+            server_url="http://defense.test",
+            username="u",
+            password="p",
+        )
+    )
+    page_one = [_visitor(str(index)) for index in range(100)]
+    page_two = [_visitor("last")]
+    client._fetch_visitor_history = AsyncMock(side_effect=[page_one, page_two])
+
+    result = await client.iter_finalized_visitors_between(900000, 1100000)
+
+    assert len(result) == 101
+    assert client._fetch_visitor_history.await_count == 2
+    assert client._fetch_visitor_history.await_args_list[0].kwargs["page"] == 1
+    assert client._fetch_visitor_history.await_args_list[1].kwargs["page"] == 2
+    assert client._fetch_visitor_history.await_args_list[0].kwargs["page_size"] == 100
+    assert client._fetch_visitor_history.await_args_list[0].kwargs["strict"] is True
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_runs_immediately_before_sleep(monkeypatch) -> None:
+    poll = AsyncMock()
+    monkeypatch.setattr(visitor_leave_module, "poll_visitor_leave_history", poll)
+
+    async def stop_after_first_poll(_: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(visitor_leave_module.asyncio, "sleep", stop_after_first_poll)
+    with pytest.raises(asyncio.CancelledError):
+        await visitor_leave_poll_loop(
+            _defense(),
+            VisitLeaveSettings(poll_interval_seconds=300),
+        )
+
+    poll.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_defense_events_route_returns_200_without_creating_leave(
+    api_client: httpx.AsyncClient,
+) -> None:
     app.dependency_overrides[get_visit_leave_settings] = lambda: VisitLeaveSettings()
     try:
         response = await api_client.post(
             "/defense/events",
-            json={"personId": "8", "inAndOut": "2", "channelId": "1000001$7$0$0"},
+            json={
+                "sourceName": "ACESSO SERVIÇO SAIDA",
+                "remark": '{"userId":"12345678901"}',
+            },
         )
     finally:
         app.dependency_overrides.pop(get_visit_leave_settings, None)
+
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "ok"
-    assert body["processed"] == 1
+    assert response.json()["status"] == "ignored"
+    assert response.json()["processed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_persists_sqlite_and_ignores_duplicate(tmp_path, monkeypatch) -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from src.core.database import Base
+    from src.models.visitor_leave import VisitorLeaveEvent
+    from src.services import visitor_leave_store as store
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'middleware.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    monkeypatch.setattr(store, "SessionLocal", Session)
+    monkeypatch.setattr(visitor_leave_module, "persist_visitor_leave", store.persist_visitor_leave)
+    monkeypatch.setattr(visitor_leave_module.time, "time", lambda: 1_000_100)
+    monkeypatch.setattr(visitor_leave_module, "log_visitor_leave", lambda payload: None)
+
+    settings = VisitLeaveSettings(state_path=str(tmp_path / "state.json"))
+    first = await poll_visitor_leave_history(
+        defense_client=_defense(_visitor()),
+        settings=settings,
+    )
+    second = await poll_visitor_leave_history(
+        defense_client=_defense(_visitor()),
+        settings=settings,
+    )
+
+    assert first["processed"] == 1
+    assert second["processed"] == 0
+    with Session() as session:
+        rows = session.query(VisitorLeaveEvent).all()
+        assert len(rows) == 1
+        assert rows[0].visitor_id == "1842"
+        assert rows[0].leave_time == 1_000_000
