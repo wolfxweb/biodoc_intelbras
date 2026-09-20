@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Baixas de visita</title>
+  <title>Middleware Intelbras Defense</title>
   <style>
     :root { --green: #00995A; --dark-green: #007f4a; --text-dark: #333; --bg: #f9f9f9; }
     * { box-sizing: border-box; }
@@ -17,7 +17,7 @@
     .wrap { max-width: 1200px; margin: 0 auto; padding: 20px 24px 48px; width: 100%; flex: 1; }
     .card { background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 2px 12px rgba(0,0,0,.05); margin-bottom: 16px; }
     label { display: block; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: #888; margin-bottom: 4px; }
-    input[type=text], input[type=date], input[type=url] {
+    input[type=text], input[type=date], input[type=url], input[type=password] {
       width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 999px; min-width: 0;
     }
     .filter-actions { display: flex; gap: 8px; width: 100%; }
@@ -53,17 +53,21 @@
 </head>
 <body>
   {% set nav_active = "baixas" %}
-  {% set page_title = "Baixas de visita" %}
+  {% set page_title = "Middleware Intelbras Defense" %}
   {% include "navbar.html" %}
   <div class="wrap">
     <div class="card">
       <form class="settings grid-12" method="post" action="/settings/webhook-url">
-        <div class="col-10">
+        <div class="col-5">
           <label for="webhook_url">URL de destino</label>
           <input id="webhook_url" name="webhook_url" type="url" value="{{ webhook_url }}" placeholder="https://...">
         </div>
+        <div class="col-5">
+          <label for="webhook_token">Token de envio</label>
+          <input id="webhook_token" name="webhook_token" type="password" value="{{ webhook_token }}" placeholder="Bearer token" autocomplete="off">
+        </div>
         <div class="col-2">
-          <button type="submit">Salvar URL</button>
+          <button type="submit">Salvar</button>
         </div>
       </form>
     </div>

@@ -24,6 +24,7 @@ from src.services.visitor_leave import (
 def _noop_sqlite(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(visitor_leave_module, "persist_visitor_leave", lambda *a, **k: True)
     monkeypatch.setattr(visitor_leave_module, "get_webhook_url", lambda url="": url)
+    monkeypatch.setattr(visitor_leave_module, "get_webhook_token", lambda token="": token)
 
 
 def _visitor(

@@ -48,6 +48,8 @@ async def test_lifespan_starts_and_closes_defense_client(monkeypatch):
     monkeypatch.setattr(lifespan_module, "import_visitor_leave_logs_if_empty", lambda: 0)
     monkeypatch.setattr(lifespan_module, "get_webhook_url", lambda url="": url)
     monkeypatch.setattr(lifespan_module, "set_webhook_url", lambda url: None)
+    monkeypatch.setattr(lifespan_module, "get_webhook_token", lambda token="": token)
+    monkeypatch.setattr(lifespan_module, "set_webhook_token", lambda token: None)
 
     app = FastAPI()
 

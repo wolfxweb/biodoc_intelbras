@@ -2,7 +2,11 @@ import httpx
 import pytest
 from sqlalchemy.orm import Session
 
-from src.models.visitor_leave import WEBHOOK_URL_SETTING_KEY, VisitorLeaveEvent
+from src.models.visitor_leave import (
+    WEBHOOK_TOKEN_SETTING_KEY,
+    WEBHOOK_URL_SETTING_KEY,
+    VisitorLeaveEvent,
+)
 from src.services.visitor_leave_store import get_setting
 
 
@@ -119,12 +123,16 @@ async def test_save_webhook_url(
     await _login(api_client)
     response = await api_client.post(
         "/settings/webhook-url",
-        data={"webhook_url": "https://example.test/hook"},
+        data={
+            "webhook_url": "https://example.test/hook",
+            "webhook_token": "secret-token",
+        },
         follow_redirects=False,
     )
     assert response.status_code == 303
     assert "saved=1" in response.headers["location"]
     assert get_setting(WEBHOOK_URL_SETTING_KEY, db=db_session) == "https://example.test/hook"
+    assert get_setting(WEBHOOK_TOKEN_SETTING_KEY, db=db_session) == "secret-token"
 
 
 @pytest.mark.asyncio

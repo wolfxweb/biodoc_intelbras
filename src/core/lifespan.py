@@ -17,9 +17,11 @@ from src.services.visitor_leave import (
     visitor_leave_poll_loop,
 )
 from src.services.visitor_leave_store import (
+    get_webhook_token,
     get_webhook_url,
     init_visit_leave_db,
     import_visitor_leave_logs_if_empty,
+    set_webhook_token,
     set_webhook_url,
 )
 
@@ -104,6 +106,8 @@ async def lifespan(app: FastAPI):
     app.state.visit_leave_settings = build_visit_leave_settings_from_env()
     if app.state.visit_leave_settings.webhook_url and not get_webhook_url():
         set_webhook_url(app.state.visit_leave_settings.webhook_url)
+    if app.state.visit_leave_settings.webhook_token and not get_webhook_token():
+        set_webhook_token(app.state.visit_leave_settings.webhook_token)
     biodoc_configured = bool(os.getenv("BIODOC_TOKEN_API"))
     logger.info(
         "BioDoc client started (api_url=%s, configured=%s, ambiente=%s)",

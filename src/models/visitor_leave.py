@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from src.core.database import Base
 
 WEBHOOK_URL_SETTING_KEY = "visit_leave_webhook_url"
+WEBHOOK_TOKEN_SETTING_KEY = "visit_leave_webhook_token"
 
 
 class VisitorLeaveEvent(Base):

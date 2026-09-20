@@ -14,7 +14,11 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from src.core.logging import logger, visitor_leave_logger
-from src.services.visitor_leave_store import get_webhook_url, persist_visitor_leave
+from src.services.visitor_leave_store import (
+    get_webhook_token,
+    get_webhook_url,
+    persist_visitor_leave,
+)
 
 try:
     _LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
@@ -306,6 +310,7 @@ async def poll_visitor_leave_history(
         delivery = replace(
             settings,
             webhook_url=get_webhook_url(settings.webhook_url),
+            webhook_token=get_webhook_token(settings.webhook_token),
         )
         sent = await forward_visitor_leave(payload, delivery)
         persist_visitor_leave(payload, forwarded=sent)

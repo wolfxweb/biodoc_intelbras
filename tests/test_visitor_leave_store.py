@@ -71,6 +71,14 @@ def test_webhook_url_prefers_database_over_env(tmp_path, monkeypatch) -> None:
     assert store.get_webhook_url("https://env.example/hook") == "https://db.example/hook"
 
 
+def test_webhook_token_prefers_database_over_env(tmp_path, monkeypatch) -> None:
+    _bind_tmp_db(tmp_path, monkeypatch)
+
+    assert store.get_webhook_token("env-token") == "env-token"
+    store.set_webhook_token("db-token")
+    assert store.get_webhook_token("env-token") == "db-token"
+
+
 def test_import_logs_once_when_table_empty(tmp_path, monkeypatch) -> None:
     Session = _bind_tmp_db(tmp_path, monkeypatch)
     log_dir = tmp_path / "log"

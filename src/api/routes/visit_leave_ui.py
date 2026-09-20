@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session
 from src.api.manuals import get_manual, list_manuals, render_manual
 from src.core.database import get_db
 from src.models.visitor_leave import VisitorLeaveEvent
-from src.services.visitor_leave_store import format_unix, get_webhook_url, set_webhook_url
+from src.services.visitor_leave_store import (
+    format_unix,
+    get_webhook_token,
+    get_webhook_url,
+    set_webhook_token,
+    set_webhook_url,
+)
 
 router = APIRouter(include_in_schema=False)
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
@@ -167,6 +173,7 @@ async def visit_leave_list(
         }
     )
     env_url = os.getenv("VISIT_LEAVE_WEBHOOK_URL", "").strip()
+    env_token = os.getenv("VISIT_LEAVE_WEBHOOK_TOKEN", "").strip()
     return templates.TemplateResponse(
         request,
         "list.html",
@@ -181,6 +188,7 @@ async def visit_leave_list(
             "total": total,
             "filter_qs": filter_qs,
             "webhook_url": get_webhook_url(env_url, db=db),
+            "webhook_token": get_webhook_token(env_token, db=db),
             "saved": request.query_params.get("saved") == "1",
         },
     )
@@ -191,10 +199,12 @@ async def save_webhook_url(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     webhook_url: Annotated[str, Form()] = "",
+    webhook_token: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
     if not _is_authenticated(request):
         return RedirectResponse("/login", status_code=303)
     set_webhook_url(webhook_url, db=db)
+    set_webhook_token(webhook_token, db=db)
     return RedirectResponse("/?saved=1", status_code=303)
 
 

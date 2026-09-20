@@ -15,6 +15,7 @@ from src.core.database import Base, SessionLocal, engine
 from src.core.logging import LOG_DIR, logger
 from src.models.integration_source import IntegrationSource  # noqa: F401
 from src.models.visitor_leave import (
+    WEBHOOK_TOKEN_SETTING_KEY,
     WEBHOOK_URL_SETTING_KEY,
     AppSetting,
     VisitorLeaveEvent,
@@ -134,6 +135,15 @@ def get_webhook_url(env_fallback: str = "", *, db: Session | None = None) -> str
 
 def set_webhook_url(url: str, *, db: Session | None = None) -> None:
     set_setting(WEBHOOK_URL_SETTING_KEY, url.strip(), db=db)
+
+
+def get_webhook_token(env_fallback: str = "", *, db: Session | None = None) -> str:
+    stored = get_setting(WEBHOOK_TOKEN_SETTING_KEY, db=db).strip()
+    return stored or env_fallback.strip()
+
+
+def set_webhook_token(token: str, *, db: Session | None = None) -> None:
+    set_setting(WEBHOOK_TOKEN_SETTING_KEY, token.strip(), db=db)
 
 
 def import_visitor_leave_logs_if_empty(*, log_dir: str | Path | None = None) -> int:
