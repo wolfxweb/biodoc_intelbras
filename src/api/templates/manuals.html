@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if manual %}{{ manual.title }} — {% endif %}Manuais</title>
+  <style>
+    :root { --green: #00995A; --dark-green: #007f4a; --text-dark: #333; --bg: #f9f9f9; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+      background: var(--bg); color: var(--text-dark);
+    }
+    {% include "navbar_styles.html" %}
+    h1 { margin: 0; font-size: 1.2rem; }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 20px 24px 48px; width: 100%; flex: 1; display: grid; grid-template-columns: 260px 1fr; gap: 16px; }
+    @media (max-width: 800px) { .wrap { grid-template-columns: 1fr; } }
+    .card { background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 2px 12px rgba(0,0,0,.05); }
+    .side-nav a {
+      display: block; padding: 10px 12px; border-radius: 8px; color: var(--text-dark);
+      text-decoration: none; margin-bottom: 6px;
+    }
+    .side-nav a:hover, .side-nav a.active { background: #f3fbf6; color: var(--dark-green); font-weight: 600; }
+    .prose { line-height: 1.6; overflow-x: auto; }
+    .prose h1, .prose h2, .prose h3 { color: var(--text-dark); }
+    .prose h1 { font-size: 1.45rem; margin-top: 0; }
+    .prose h2 { font-size: 1.15rem; margin-top: 1.6rem; border-top: 1px solid #eee; padding-top: 1rem; }
+    .prose a { color: var(--dark-green); }
+    .prose pre, .prose code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .prose pre { background: #111; color: #e8e8e8; padding: 14px; border-radius: 8px; overflow: auto; font-size: .82rem; }
+    .prose code { background: #f3f3f3; padding: 1px 5px; border-radius: 4px; font-size: .88rem; }
+    .prose pre code { background: transparent; padding: 0; color: inherit; }
+    .prose table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+    .prose th, .prose td { border-bottom: 1px solid #eee; text-align: left; padding: 8px 10px; vertical-align: top; }
+    .prose th { font-size: .75rem; text-transform: uppercase; color: #888; }
+    .muted { color: #888; }
+    .site-footer {
+      padding: 16px 24px; text-align: center; background: #fff; border-top: 1px solid #e8e8e8;
+      color: #18181b; font-size: .875rem;
+    }
+    .site-footer p { margin: 0; }
+    .site-footer a { color: #18181b; font-weight: 600; text-decoration: none; }
+    .site-footer a:hover { color: var(--green); text-decoration: underline; }
+  </style>
+</head>
+<body>
+  {% set nav_active = "manuais" %}
+  {% set page_title = "Manuais" %}
+  {% include "navbar.html" %}
+  <div class="wrap">
+    <aside class="card">
+      <nav class="side-nav">
+        {% for item in manuals %}
+        <a href="/manuais/{{ item.slug }}" class="{% if manual and manual.slug == item.slug %}active{% endif %}">{{ item.title }}</a>
+        {% else %}
+        <p class="muted">Nenhum manual encontrado.</p>
+        {% endfor %}
+      </nav>
+    </aside>
+    <article class="card prose">
+      {% if manual %}
+      {{ body_html | safe }}
+      {% else %}
+      <h1>Documentação do middleware</h1>
+      <p>Selecione um manual à esquerda. Esta área só aparece para usuário logado.</p>
+      <p><a class="btn" href="/docs" target="_blank" rel="noopener noreferrer">Abrir Docs da API</a></p>
+      {% endif %}
+    </article>
+  </div>
+  {% include "footer.html" %}
+</body>
+</html>

@@ -10,6 +10,7 @@ from src.api.webhook_audit_middleware import WebhookAuditMiddleware
 from src.core.lifespan import lifespan
 from src.api.routes.sync import router as sync_router
 from src.api.routes.webhook import router as webhook_router
+from src.api.routes.visit_leave_ui import router as visit_leave_ui_router
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -72,6 +73,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(visit_leave_ui_router)
 app.include_router(sync_router)
 app.include_router(webhook_router)
 
@@ -119,7 +121,12 @@ async def integration_status(request: Request) -> dict:
             "ambiente": os.getenv("BIODOC_AMBIENTE", "sandbox"),
         },
         "visit_leave": {
-            "callback_url": getattr(defense.settings, "alarm_callback_url", "") or "",
-            "webhook_configured": bool(os.getenv("VISIT_LEAVE_WEBHOOK_URL", "").strip()),
+            "source": "visitor_history",
+            "webhook_configured": bool(
+                os.getenv("VISIT_LEAVE_WEBHOOK_URL", "").strip()
+            ),
+            "poll_seconds": int(
+                float(os.getenv("VISIT_LEAVE_POLL_SECONDS", "60") or "0")
+            ),
         },
     }

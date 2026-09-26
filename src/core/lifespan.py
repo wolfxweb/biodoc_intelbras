@@ -12,7 +12,18 @@ from src.services.defense_ia_client import (
     SYNC_TARGET_PERSON,
     SYNC_TARGET_VISITOR,
 )
-from src.services.visitor_leave import VisitLeaveSettings
+from src.services.visitor_leave import (
+    VisitLeaveSettings,
+    visitor_leave_poll_loop,
+)
+from src.services.visitor_leave_store import (
+    get_webhook_token,
+    get_webhook_url,
+    init_visit_leave_db,
+    import_visitor_leave_logs_if_empty,
+    set_webhook_token,
+    set_webhook_url,
+)
 
 
 def _load_sync_target() -> str:
@@ -47,26 +58,19 @@ def build_defense_client_from_env() -> DefenseIAClient:
         visitor_status=os.getenv("DEFENSE_IA_VISITOR_STATUS", "1"),
         visited_name=os.getenv("DEFENSE_IA_VISITED_NAME", ""),
         visited_org_name=os.getenv("DEFENSE_IA_VISITED_ORG_NAME", ""),
-        alarm_callback_url=resolve_visit_leave_callback_url(),
     )
     return DefenseIAClient(settings=settings)
 
 
-def resolve_visit_leave_callback_url() -> str:
-    explicit = os.getenv("VISIT_LEAVE_CALLBACK_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    base = os.getenv("MIDDLEWARE_URL", "").strip().rstrip("/")
-    if base:
-        return f"{base}/defense/events"
-    return ""
-
-
 def build_visit_leave_settings_from_env() -> VisitLeaveSettings:
+    poll_raw = os.getenv("VISIT_LEAVE_POLL_SECONDS", "60").strip()
+    poll_interval = float(poll_raw) if poll_raw else 0.0
     return VisitLeaveSettings(
         webhook_url=os.getenv("VISIT_LEAVE_WEBHOOK_URL", "").strip(),
         webhook_token=os.getenv("VISIT_LEAVE_WEBHOOK_TOKEN", "").strip(),
         timeout_seconds=float(os.getenv("DEFENSE_IA_TIMEOUT_SECONDS", "10")),
+        poll_interval_seconds=poll_interval,
+        state_path=os.getenv("VISIT_LEAVE_STATE_PATH", "data/visitor_leave_state.json"),
     )
 
 
@@ -97,7 +101,13 @@ async def lifespan(app: FastAPI):
 
     app.state.biodoc_client = build_biodoc_client_from_env()
     await app.state.biodoc_client.start()
+    init_visit_leave_db()
+    import_visitor_leave_logs_if_empty()
     app.state.visit_leave_settings = build_visit_leave_settings_from_env()
+    if app.state.visit_leave_settings.webhook_url and not get_webhook_url():
+        set_webhook_url(app.state.visit_leave_settings.webhook_url)
+    if app.state.visit_leave_settings.webhook_token and not get_webhook_token():
+        set_webhook_token(app.state.visit_leave_settings.webhook_token)
     biodoc_configured = bool(os.getenv("BIODOC_TOKEN_API"))
     logger.info(
         "BioDoc client started (api_url=%s, configured=%s, ambiente=%s)",
@@ -107,10 +117,14 @@ async def lifespan(app: FastAPI):
     )
     leave_settings = app.state.visit_leave_settings
     logger.info(
-        "Visit leave: callbackUrl=%s webhook=%s",
-        app.state.defense_client.settings.alarm_callback_url or "(vazio)",
-        "on" if leave_settings.forward_enabled else "log-only",
+        "Visit leave: source=history webhook=%s poll=%ss",
+        "on" if bool(get_webhook_url(leave_settings.webhook_url)) else "log-only",
+        int(leave_settings.poll_interval_seconds) if leave_settings.poll_enabled else 0,
     )
+    if app.state.defense_client.settings.enabled and leave_settings.poll_enabled:
+        asyncio.create_task(
+            visitor_leave_poll_loop(app.state.defense_client, leave_settings)
+        )
 
     try:
         yield

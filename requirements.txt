@@ -8,3 +8,7 @@ pytest-asyncio==0.23.8
 pytest-cov==4.1.0
 httpx==0.28.1
 cryptography==44.0.3
+markdown==3.7
+jinja2==3.1.6
+itsdangerous==2.2.0
+python-multipart==0.0.20

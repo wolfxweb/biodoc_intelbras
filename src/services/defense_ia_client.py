@@ -614,7 +614,6 @@ class DefenseIAClient:
             self._token = token
             self._dollar_signature = dollar_signature
             self._session_conflict = False
-            await self._subscribe_alarm_push_safe()
             return token
 
     async def keep_alive_once(self) -> None:
@@ -1265,8 +1264,14 @@ class DefenseIAClient:
         id_no: str = "",
         card_no: str = "",
         visitor_name: str = "",
+        status: str = "-1",
+        start_time: int | None = None,
+        end_time: int | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        strict: bool = False,
     ) -> list[dict[str, Any]]:
-        if not any((id_no, card_no, visitor_name)):
+        if not any((id_no, card_no, visitor_name)) and status == "-1":
             return []
         if not self._token:
             await self.login()
@@ -1276,13 +1281,13 @@ class DefenseIAClient:
             "idNo": id_no,
             "tel": "",
             "visitorName": visitor_name,
-            "page": "1",
-            "endTime": str(now + 86400),
+            "page": str(page),
+            "endTime": str(end_time if end_time is not None else now + 86400),
             "visitedCompany": "",
-            "startTime": str(now - 86400 * 30),
-            "status": "-1",
+            "startTime": str(start_time if start_time is not None else now - 86400 * 30),
+            "status": status,
             "visitedName": "",
-            "pageSize": "20",
+            "pageSize": str(page_size),
             "email": "",
         }
         response = await self._request(
@@ -1300,14 +1305,134 @@ class DefenseIAClient:
                 headers=self._auth_headers(),
             )
         if not response.is_success or not response.content:
+            if strict:
+                raise DefenseIAUnavailableError(
+                    f"Falha no histórico de visitantes: HTTP {response.status_code}"
+                )
             return []
         try:
             body = response.json()
-        except ValueError:
+        except ValueError as exc:
+            if strict:
+                raise DefenseIAError("Resposta inválida do histórico de visitantes") from exc
             return []
         if not isinstance(body, dict):
+            if strict:
+                raise DefenseIAError("Resposta inesperada do histórico de visitantes")
             return []
+        if strict and body.get("code") not in SUCCESS_CODES:
+            raise DefenseIAError(
+                f"Defense IA rejeitou consulta ao histórico: code={body.get('code')}"
+            )
         return self._extract_visitor_page_items(body)
+
+    @staticmethod
+    def _visitor_is_finalized(item: dict[str, Any]) -> bool:
+        status = str(item.get("status") or "").strip()
+        if status in {"2", "4"}:
+            return True
+        leave_time = str(item.get("leaveTime") or "").strip()
+        return bool(leave_time and leave_time != "0")
+
+    async def find_finalized_visitor_for_leave_event(
+        self,
+        *,
+        visitor_id: str | None = None,
+        person_id: str | None = None,
+        id_num: str | None = None,
+        card_no: str | None = None,
+        name: str | None = None,
+        since_seconds: int = 7200,
+    ) -> dict[str, Any] | None:
+        """Busca visitante já baixado (status=2) no histórico ou cadastro."""
+        if visitor_id:
+            try:
+                detail = await self._fetch_brms_visitor(visitor_id)
+            except DefenseIAUnauthorizedError:
+                await self.login()
+                detail = await self._fetch_brms_visitor(visitor_id)
+            if detail:
+                node = detail.get("data", detail)
+                if isinstance(node, dict) and self._visitor_is_finalized(node):
+                    return node
+
+        now = int(time.time())
+        start = now - max(since_seconds, 60)
+        search_keys: list[str] = []
+        for value in (id_num, card_no, person_id, name):
+            if value and value not in search_keys:
+                search_keys.append(value)
+
+        for key in search_keys:
+            history_queries: list[dict[str, str]] = []
+            if key == id_num:
+                history_queries.append({"id_no": key, "card_no": "", "visitor_name": ""})
+            if key in (card_no, person_id):
+                history_queries.append({"id_no": "", "card_no": key, "visitor_name": ""})
+            if key == name:
+                history_queries.append({"id_no": "", "card_no": "", "visitor_name": key})
+            if not history_queries:
+                history_queries.append({"id_no": "", "card_no": key, "visitor_name": ""})
+            for query in history_queries:
+                for item in await self._fetch_visitor_history(
+                    id_no=query["id_no"],
+                    card_no=query["card_no"],
+                    visitor_name=query["visitor_name"],
+                    status="2",
+                    start_time=start,
+                    end_time=now + 86400,
+                    page_size=50,
+                ):
+                    if self._visitor_item_matches(
+                        item,
+                        visitor_id=visitor_id,
+                        person_id=person_id,
+                        id_num=id_num,
+                        card_no=card_no,
+                        name=name,
+                    ) and self._visitor_is_finalized(item):
+                        return item
+
+        for key in search_keys:
+            for item in await self._fetch_visitor_page(key):
+                if self._visitor_item_matches(
+                    item,
+                    visitor_id=visitor_id,
+                    person_id=person_id,
+                    id_num=id_num,
+                    card_no=card_no,
+                    name=name,
+                ) and self._visitor_is_finalized(item):
+                    return item
+        return None
+
+    async def iter_finalized_visitors_between(
+        self,
+        start_time: int,
+        end_time: int,
+        *,
+        page_size: int = 100,
+        max_pages: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Lista visitas finalizadas (status=2) em um intervalo — usado no polling."""
+        all_items: list[dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            items = await self._fetch_visitor_history(
+                status="2",
+                start_time=start_time,
+                end_time=end_time,
+                page=page,
+                page_size=page_size,
+                strict=True,
+            )
+            if not items:
+                break
+            all_items.extend(items)
+            if len(items) < page_size:
+                break
+            page += 1
+        return all_items
 
     @staticmethod
     def _visitor_item_matches(

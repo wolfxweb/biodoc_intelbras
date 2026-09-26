@@ -17,6 +17,8 @@ RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 # Copia todo o código-fonte da aplicação
 COPY src /app/src
+COPY README.md /app/README.md
+COPY docs/*.md /app/docs/
 
 # Cria o diretório de logs esperado pela aplicação (definido no core/logging.py como /log)
 RUN mkdir -p /log

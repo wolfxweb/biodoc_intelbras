@@ -102,11 +102,10 @@ async def webhook_biodoc_ingress(request: Request) -> dict[str, str]:
 
 @router.post(
     "/defense/events",
-    summary="Callback Event Center — baixa de visita",
+    summary="Callback legado do Event Center",
     description=(
-        "Recebe o push do Defense IA (`push-data/alarm/subscribe`). "
-        "Filtra saída de visitante, grava `log/visitor_leave.log` e "
-        "encaminha JSON para `VISIT_LEAVE_WEBHOOK_URL`. Sem autenticação."
+        "Mantido por compatibilidade e responde sem processar alarmes. "
+        "As baixas são obtidas exclusivamente pelo polling do histórico oficial."
     ),
 )
 async def defense_event_ingress(
