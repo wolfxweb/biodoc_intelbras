@@ -129,7 +129,7 @@ async def sync_to_defense(
             detail=str(exc),
         ) from exc
     except (DefenseIAUnavailableError, DefenseIAError) as exc:
-        logger.exception(
+        logger.error(
             "%sfalha ao sincronizar external_id=%s no Defense IA: %s",
             prefix,
             sync_request.external_id,
