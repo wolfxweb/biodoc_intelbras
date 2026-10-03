@@ -22,6 +22,12 @@ class VisitorLeaveEvent(Base):
     leave_time: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     logged_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     forwarded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    forward_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_attempt_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 

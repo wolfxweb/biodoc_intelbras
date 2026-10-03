@@ -11,11 +11,15 @@ from src.main import app
 from src.services.defense_ia_client import DefenseIAClient, DefenseIASettings
 from src.services import visitor_leave as visitor_leave_module
 from src.services.visitor_leave import (
+    ForwardResult,
     VisitLeaveSettings,
+    _error_text,
     build_leave_payload,
     is_finalized_visitor,
     poll_visitor_leave_history,
     process_visitor_leave_body,
+    resend_stored_leave,
+    retry_unsent_visitor_leaves,
     visitor_leave_poll_loop,
 )
 
@@ -50,6 +54,68 @@ def _defense(*visitors: dict) -> AsyncMock:
     defense.settings = SimpleNamespace(enabled=True)
     defense.iter_finalized_visitors_between = AsyncMock(return_value=list(visitors))
     return defense
+
+
+def test_stored_timeout_error_is_short_on_screen() -> None:
+    raw = (
+        "ConnectTimeout | ConnectTimeout | TimeoutError | "
+        "CancelledError: Cancelled via cancel scope 7fabef0a7e30; "
+        "reason: deadline exceeded: destino não respondeu no timeout, sem corpo HTTP"
+    )
+    text = visitor_leave_module.format_stored_forward_error(raw)
+    assert text == "Tempo esgotado ao conectar no destino. Ele não chegou a responder."
+    assert "cancel scope" not in text
+
+
+def test_error_text_keeps_exception_type_when_message_is_empty() -> None:
+    class SilentError(Exception):
+        def __str__(self) -> str:
+            return ""
+
+    assert _error_text(SilentError()) == "Falha de rede (SilentError)."
+
+
+def test_vista_public_url_keeps_host_and_token_path(monkeypatch) -> None:
+    monkeypatch.setattr(
+        visitor_leave_module,
+        "_traefik_ip",
+        lambda: "10.0.1.2",
+    )
+    url, headers, extensions = visitor_leave_module._delivery_target(
+        "https://vista.wolfx.com.br/api/v1/events"
+    )
+    assert url == "https://10.0.1.2/api/v1/events"
+    assert headers["Host"] == "vista.wolfx.com.br"
+    assert extensions["sni_hostname"] == "vista.wolfx.com.br"
+
+
+@pytest.mark.asyncio
+async def test_forward_saves_http_response_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"message": "visitorId já recebido"})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    class _Client(real_client):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(visitor_leave_module.httpx, "AsyncClient", _Client)
+    try:
+        result = await visitor_leave_module.forward_visitor_leave(
+            {"event": "visitor_leave", "visitorId": "9", "leaveTime": "5"},
+            VisitLeaveSettings(webhook_url="https://example.test/hook"),
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert result.sent is False
+    assert result.attempted is True
+    assert result.status_code == 422
+    assert "visitorId já recebido" in (result.error or "")
 
 
 def test_build_leave_payload_uses_only_history_fields() -> None:
@@ -338,3 +404,168 @@ async def test_poll_persists_sqlite_and_ignores_duplicate(tmp_path, monkeypatch)
         assert len(rows) == 1
         assert rows[0].visitor_id == "1842"
         assert rows[0].leave_time == 1_000_000
+
+
+def _bind_store(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from src.core.database import Base
+    from src.services import visitor_leave_store as store
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'middleware.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    monkeypatch.setattr(store, "engine", engine)
+    monkeypatch.setattr(store, "SessionLocal", Session)
+    return store, Session
+
+
+@pytest.mark.asyncio
+async def test_resend_posts_stored_payload(tmp_path, monkeypatch) -> None:
+    store, Session = _bind_store(tmp_path, monkeypatch)
+    stored = {
+        "event": "visitor_leave",
+        "visitorId": "9",
+        "leaveTime": "5",
+        "loggedAt": "kept",
+    }
+    with Session() as session:
+        session.add(
+            __import__("src.models.visitor_leave", fromlist=["VisitorLeaveEvent"]).VisitorLeaveEvent(
+                visitor_id="9",
+                leave_time=5,
+                logged_at="2026-10-03T11:00:00-03:00",
+                forwarded=False,
+                payload_json=json.dumps(stored),
+            )
+        )
+        session.commit()
+
+    captured: list[dict] = []
+
+    async def fake_forward(payload, settings):
+        captured.append(payload)
+        return ForwardResult(sent=True, attempted=True, status_code=200)
+
+    monkeypatch.setattr(visitor_leave_module, "forward_visitor_leave", fake_forward)
+    result = await resend_stored_leave(
+        visitor_id="9",
+        leave_time=5,
+        payload_json=json.dumps(stored),
+        settings=VisitLeaveSettings(webhook_url="https://example.test/hook"),
+    )
+
+    assert result.sent is True
+    assert captured == [stored]
+    with Session() as session:
+        from src.models.visitor_leave import VisitorLeaveEvent
+
+        row = session.query(VisitorLeaveEvent).one()
+        assert row.forwarded is True
+        assert row.payload_json == json.dumps(stored)
+        assert row.forward_attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_resend_without_url_does_not_count_attempt(tmp_path, monkeypatch) -> None:
+    store, Session = _bind_store(tmp_path, monkeypatch)
+    payload = '{"event":"visitor_leave","visitorId":"9","leaveTime":"5"}'
+    with Session() as session:
+        from src.models.visitor_leave import VisitorLeaveEvent
+
+        session.add(
+            VisitorLeaveEvent(
+                visitor_id="9",
+                leave_time=5,
+                forwarded=False,
+                payload_json=payload,
+            )
+        )
+        session.commit()
+
+    called = False
+
+    async def fake_forward(payload, settings):
+        nonlocal called
+        called = True
+        return ForwardResult(sent=True, attempted=True)
+
+    monkeypatch.setattr(visitor_leave_module, "forward_visitor_leave", fake_forward)
+    result = await resend_stored_leave(
+        visitor_id="9",
+        leave_time=5,
+        payload_json=payload,
+        settings=VisitLeaveSettings(),
+    )
+
+    assert result.attempted is False
+    assert called is False
+    with Session() as session:
+        from src.models.visitor_leave import VisitorLeaveEvent
+
+        row = session.query(VisitorLeaveEvent).one()
+        assert row.forward_attempts == 0
+        assert row.payload_json == payload
+
+
+@pytest.mark.asyncio
+async def test_retry_skips_sent_and_rows_outside_window(tmp_path, monkeypatch) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    store, Session = _bind_store(tmp_path, monkeypatch)
+    now = datetime(2026, 10, 3, 12, 0, tzinfo=ZoneInfo("America/Sao_Paulo"))
+    monkeypatch.setattr(store, "_clock", lambda: now)
+    from src.models.visitor_leave import VisitorLeaveEvent
+
+    def add(visitor_id: str, leave_time: int, logged_at: str, forwarded: bool, marker: str) -> None:
+        with Session() as session:
+            session.add(
+                VisitorLeaveEvent(
+                    visitor_id=visitor_id,
+                    leave_time=leave_time,
+                    logged_at=logged_at,
+                    forwarded=forwarded,
+                    payload_json=json.dumps(
+                        {
+                            "event": "visitor_leave",
+                            "visitorId": visitor_id,
+                            "leaveTime": str(leave_time),
+                            "loggedAt": marker,
+                        }
+                    ),
+                )
+            )
+            session.commit()
+
+    add("recent", 30, "2026-10-03T11:00:00-03:00", False, "recent")
+    add("old", 20, "2026-10-03T03:00:00-03:00", False, "old")
+    add("sent", 10, "2026-10-03T11:30:00-03:00", True, "sent")
+
+    captured: list[str] = []
+
+    async def fake_forward(payload, settings):
+        captured.append(payload["loggedAt"])
+        return ForwardResult(sent=False, attempted=True, error="HTTP 503: down", status_code=503)
+
+    monkeypatch.setattr(visitor_leave_module, "forward_visitor_leave", fake_forward)
+    summary = await retry_unsent_visitor_leaves(
+        VisitLeaveSettings(
+            webhook_url="https://example.test/hook",
+            retry_window_hours=6,
+        )
+    )
+
+    assert summary["failed"] == 1
+    assert captured == ["recent"]
+    with Session() as session:
+        recent = session.query(VisitorLeaveEvent).filter_by(visitor_id="recent").one()
+        old = session.query(VisitorLeaveEvent).filter_by(visitor_id="old").one()
+        assert recent.forward_attempts == 1
+        assert recent.last_error == "HTTP 503: down"
+        assert old.forward_attempts == 0
+        assert '"loggedAt": "recent"' in recent.payload_json

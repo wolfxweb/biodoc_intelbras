@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -17,7 +19,9 @@ from src.core.logging import logger, visitor_leave_logger
 from src.services.visitor_leave_store import (
     get_webhook_token,
     get_webhook_url,
+    list_pending_leaves,
     persist_visitor_leave,
+    record_forward_result,
 )
 
 try:
@@ -35,6 +39,17 @@ INITIAL_LOOKBACK_SECONDS = HISTORY_LOOKBACK_SECONDS
 STATE_VERSION = 2
 EMITTED_RETENTION_SECONDS = 7 * 86400
 WEBHOOK_RETRY_DELAYS_SECONDS = (1.0, 3.0)
+RETRY_BATCH_LIMIT = 200
+RETRY_CONCURRENCY = 5
+_retry_cycle_lock = asyncio.Lock()
+
+
+@dataclass(frozen=True)
+class ForwardResult:
+    sent: bool
+    error: str | None = None
+    status_code: int | None = None
+    attempted: bool = False
 
 
 @dataclass(frozen=True)
@@ -44,6 +59,8 @@ class VisitLeaveSettings:
     timeout_seconds: float = 10.0
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     state_path: str = "data/visitor_leave_state.json"
+    retry_interval_seconds: float = 600.0
+    retry_window_hours: float = 6.0
 
     @property
     def forward_enabled(self) -> bool:
@@ -52,6 +69,10 @@ class VisitLeaveSettings:
     @property
     def poll_enabled(self) -> bool:
         return self.poll_interval_seconds > 0
+
+    @property
+    def retry_enabled(self) -> bool:
+        return self.retry_interval_seconds > 0
 
 
 @dataclass
@@ -184,19 +205,125 @@ def _save_poll_state(path: str, state: PollState) -> None:
     temporary.replace(state_file)
 
 
+def _traefik_ip() -> str | None:
+    try:
+        infos = socket.getaddrinfo("traefik_traefik", 443)
+    except OSError:
+        return None
+    for info in infos:
+        ip = info[4][0]
+        if ip:
+            return ip
+    return None
+
+
+def _delivery_target(url: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Mantém a URL e o Host configurados. Só o TCP sai pelo Traefik interno.
+
+    O IP público de vista.wolfx.com.br não responde de dentro do container.
+    """
+    target = url.strip()
+    parsed = urlsplit(target)
+    if parsed.hostname != "vista.wolfx.com.br":
+        return target, {}, {}
+    pin = _traefik_ip()
+    if not pin:
+        return target, {}, {}
+    pinned = urlunsplit((parsed.scheme or "https", pin, parsed.path or "/", parsed.query, ""))
+    return pinned, {"Host": parsed.hostname}, {"sni_hostname": parsed.hostname}
+
+
+def format_stored_forward_error(value: str | None) -> str:
+    """Texto curto para a tela, inclusive em erros antigos já gravados."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if (
+        "connecttimeout" in lowered
+        or "deadline exceeded" in lowered
+        or "tempo esgotado ao conectar" in lowered
+    ):
+        return "Tempo esgotado ao conectar no destino. Ele não chegou a responder."
+    if "readtimeout" in lowered or "não respondeu a tempo" in lowered:
+        return "O destino conectou, mas não respondeu a tempo."
+    if text == "falha sem detalhe":
+        return "Falha sem detalhe do destino."
+    return text
+
+
+def _error_text(exc: BaseException) -> str:
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "Tempo esgotado ao conectar no destino. Ele não chegou a responder."
+    if isinstance(exc, httpx.ReadTimeout):
+        return "O destino conectou, mas não respondeu a tempo."
+    if isinstance(exc, httpx.ConnectError):
+        return "Não foi possível abrir conexão com o destino."
+    message = str(exc).strip()
+    if not message:
+        return f"Falha de rede ({type(exc).__name__})."
+    return f"{type(exc).__name__}: {message}"[:500]
+
+
+def _friendly_body(text: str) -> str:
+    raw = text.strip()
+    if not raw:
+        return "resposta sem corpo"
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw[:300]
+    if isinstance(data, dict):
+        detail = data.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()[:300]
+        if isinstance(detail, list):
+            messages: list[str] = []
+            for item in detail:
+                if not isinstance(item, dict) or not item.get("msg"):
+                    continue
+                loc = [str(part) for part in item.get("loc") or [] if str(part) != "body"]
+                field = ".".join(loc)
+                messages.append(f"{field}: {item['msg']}" if field else str(item["msg"]))
+            if messages:
+                return "; ".join(messages)[:300]
+        for key in ("message", "error"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:300]
+    return raw[:300]
+
+
+def _response_error(response: httpx.Response) -> str:
+    return f"HTTP {response.status_code} — {_friendly_body(response.text or '')}"[:500]
+
+
+def _failure_result(error: str, status_code: int | None = None) -> ForwardResult:
+    return ForwardResult(
+        sent=False,
+        error=error[:500],
+        status_code=status_code,
+        attempted=True,
+    )
+
+
 async def forward_visitor_leave(
     payload: dict[str, Any],
     settings: VisitLeaveSettings,
-) -> bool:
-    """Envia somente payload novo; falhas transitórias recebem backoff curto."""
+) -> ForwardResult:
+    """Envia o payload recebido. O retry curto de 1s e 3s conta como um envio."""
     if not settings.forward_enabled:
-        return False
+        return ForwardResult(sent=False, attempted=False)
 
     headers = {"Content-Type": "application/json;charset=UTF-8"}
     token = settings.webhook_token.strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
+    configured_url = settings.webhook_url.strip()
+    target_url, extra_headers, extensions = _delivery_target(configured_url)
+    headers.update(extra_headers)
+    logger.info("[VISIT_LEAVE] webhook POST %s token=%s", configured_url, "sim" if token else "não")
     delays = (0.0, *WEBHOOK_RETRY_DELAYS_SECONDS)
     async with httpx.AsyncClient(timeout=settings.timeout_seconds) as client:
         for attempt, delay in enumerate(delays, start=1):
@@ -204,31 +331,34 @@ async def forward_visitor_leave(
                 await asyncio.sleep(delay)
             try:
                 response = await client.post(
-                    settings.webhook_url.strip(),
+                    target_url,
                     json=payload,
                     headers=headers,
+                    extensions=extensions or None,
                 )
             except httpx.HTTPError as exc:
+                detail = _error_text(exc)
                 if attempt < len(delays):
                     logger.warning(
                         "[VISIT_LEAVE] webhook falhou tentativa=%s: %s",
                         attempt,
-                        exc,
+                        detail,
                     )
                     continue
-                logger.warning("[VISIT_LEAVE] webhook falhou definitivamente: %s", exc)
-                return False
+                logger.warning("[VISIT_LEAVE] webhook falhou definitivamente: %s", detail)
+                return _failure_result(detail)
 
             if response.status_code < 300:
                 logger.info("[VISIT_LEAVE] webhook ok HTTP %s", response.status_code)
-                return True
-            if response.status_code not in {429, 500, 502, 503, 504}:
-                logger.warning(
-                    "[VISIT_LEAVE] webhook HTTP %s body=%s",
-                    response.status_code,
-                    response.text[:300],
+                return ForwardResult(
+                    sent=True,
+                    status_code=response.status_code,
+                    attempted=True,
                 )
-                return False
+            detail = _response_error(response)
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                logger.warning("[VISIT_LEAVE] webhook %s", detail)
+                return _failure_result(detail, response.status_code)
             if attempt < len(delays):
                 logger.warning(
                     "[VISIT_LEAVE] webhook HTTP %s; nova tentativa=%s",
@@ -237,12 +367,62 @@ async def forward_visitor_leave(
                 )
                 continue
             logger.warning(
-                "[VISIT_LEAVE] webhook falhou após tentativas HTTP %s body=%s",
-                response.status_code,
-                response.text[:300],
+                "[VISIT_LEAVE] webhook falhou após tentativas %s",
+                detail,
             )
-            return False
-    return False
+            return _failure_result(detail, response.status_code)
+    return _failure_result("falha sem detalhe")
+
+
+def _delivery_settings(settings: VisitLeaveSettings) -> VisitLeaveSettings:
+    return replace(
+        settings,
+        webhook_url=get_webhook_url(settings.webhook_url),
+        webhook_token=get_webhook_token(settings.webhook_token),
+    )
+
+
+async def resend_stored_leave(
+    *,
+    visitor_id: str,
+    leave_time: int,
+    payload_json: str,
+    settings: VisitLeaveSettings,
+) -> ForwardResult:
+    """Reenvia o JSON já gravado, com o mesmo visitorId e leaveTime."""
+    delivery = _delivery_settings(settings)
+    if not delivery.forward_enabled:
+        return ForwardResult(sent=False, attempted=False)
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        result = _failure_result("payload_json inválido")
+        record_forward_result(
+            visitor_id,
+            leave_time,
+            sent=False,
+            error=result.error,
+        )
+        return result
+    if not isinstance(payload, dict):
+        result = _failure_result("payload_json inválido")
+        record_forward_result(
+            visitor_id,
+            leave_time,
+            sent=False,
+            error=result.error,
+        )
+        return result
+    result = await forward_visitor_leave(payload, delivery)
+    if result.attempted:
+        record_forward_result(
+            visitor_id,
+            leave_time,
+            sent=result.sent,
+            error=result.error,
+            status_code=result.status_code,
+        )
+    return result
 
 
 async def process_visitor_leave_body(
@@ -307,13 +487,21 @@ async def poll_visitor_leave_history(
 
         payload = build_leave_payload(visitor)
         log_visitor_leave(payload)
-        delivery = replace(
-            settings,
-            webhook_url=get_webhook_url(settings.webhook_url),
-            webhook_token=get_webhook_token(settings.webhook_token),
-        )
-        sent = await forward_visitor_leave(payload, delivery)
+        delivery = _delivery_settings(settings)
+        result = await forward_visitor_leave(payload, delivery)
+        sent = result.sent if isinstance(result, ForwardResult) else bool(result)
         persist_visitor_leave(payload, forwarded=sent)
+        if isinstance(result, ForwardResult) and result.attempted:
+            visitor_id = str(payload.get("visitorId") or "").strip()
+            leave_time_text = str(payload.get("leaveTime") or "").strip()
+            if visitor_id and leave_time_text.isdigit():
+                record_forward_result(
+                    visitor_id,
+                    int(leave_time_text),
+                    sent=result.sent,
+                    error=result.error,
+                    status_code=result.status_code,
+                )
         state.emitted[key] = leave_time
         # Persiste após cada emissão para minimizar duplicação em reinícios.
         _save_poll_state(settings.state_path, state)
@@ -375,3 +563,58 @@ async def visitor_leave_poll_loop(
         except Exception as exc:
             logger.warning("[VISIT_LEAVE] poll loop erro: %s", exc)
         await asyncio.sleep(settings.poll_interval_seconds)
+
+
+async def retry_unsent_visitor_leaves(settings: VisitLeaveSettings) -> dict[str, Any]:
+    """Reenvia baixas não enviadas dentro da janela. Um ciclo não entra no outro."""
+    if _retry_cycle_lock.locked():
+        return {"status": "busy", "sent": 0, "failed": 0, "skipped": 0}
+    async with _retry_cycle_lock:
+        pending = list_pending_leaves(
+            limit=RETRY_BATCH_LIMIT,
+            window_hours=settings.retry_window_hours,
+        )
+        if not pending:
+            return {"status": "ok", "sent": 0, "failed": 0, "skipped": 0}
+
+        semaphore = asyncio.Semaphore(RETRY_CONCURRENCY)
+
+        async def _one(item: Any) -> ForwardResult:
+            async with semaphore:
+                return await resend_stored_leave(
+                    visitor_id=item.visitor_id,
+                    leave_time=item.leave_time,
+                    payload_json=item.payload_json,
+                    settings=settings,
+                )
+
+        results = await asyncio.gather(*(_one(item) for item in pending))
+        sent = sum(1 for item in results if item.sent)
+        failed = sum(1 for item in results if item.attempted and not item.sent)
+        skipped = sum(1 for item in results if not item.attempted)
+        logger.info(
+            "[VISIT_LEAVE] reenvio automático sent=%s failed=%s skipped=%s batch=%s",
+            sent,
+            failed,
+            skipped,
+            len(pending),
+        )
+        return {"status": "ok", "sent": sent, "failed": failed, "skipped": skipped}
+
+
+async def visitor_leave_retry_loop(settings: VisitLeaveSettings) -> None:
+    """Reenvia não enviados no intervalo configurado, por algumas horas."""
+    if not settings.retry_enabled:
+        logger.info("[VISIT_LEAVE] reenvio automático desligado (VISIT_LEAVE_RETRY_SECONDS=0)")
+        return
+    logger.info(
+        "[VISIT_LEAVE] reenvio automático interval=%ss window=%sh",
+        int(settings.retry_interval_seconds),
+        settings.retry_window_hours,
+    )
+    while True:
+        try:
+            await retry_unsent_visitor_leaves(settings)
+        except Exception as exc:
+            logger.warning("[VISIT_LEAVE] reenvio automático erro: %s", exc)
+        await asyncio.sleep(settings.retry_interval_seconds)

@@ -44,6 +44,7 @@ async def test_lifespan_starts_and_closes_defense_client(monkeypatch):
     monkeypatch.setattr(lifespan_module, "build_biodoc_client_from_env", lambda: fake_biodoc)
 
     monkeypatch.setenv("VISIT_LEAVE_POLL_SECONDS", "0")
+    monkeypatch.setenv("VISIT_LEAVE_RETRY_SECONDS", "0")
     monkeypatch.setattr(lifespan_module, "init_visit_leave_db", lambda: None)
     monkeypatch.setattr(lifespan_module, "import_visitor_leave_logs_if_empty", lambda: 0)
     monkeypatch.setattr(lifespan_module, "get_webhook_url", lambda url="": url)
@@ -71,3 +72,5 @@ def test_visit_leave_settings_use_history_polling_defaults(monkeypatch):
 
     assert settings.poll_interval_seconds == 60
     assert settings.forward_enabled is False
+    assert settings.retry_interval_seconds == 600
+    assert settings.retry_window_hours == 6

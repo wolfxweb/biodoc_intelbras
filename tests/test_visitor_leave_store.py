@@ -79,6 +79,68 @@ def test_webhook_token_prefers_database_over_env(tmp_path, monkeypatch) -> None:
     assert store.get_webhook_token("env-token") == "db-token"
 
 
+def test_init_adds_forward_columns_and_records_result(tmp_path, monkeypatch) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'middleware.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    payload = json.dumps(_payload(), ensure_ascii=False)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE visitor_leave_events (
+                id INTEGER PRIMARY KEY,
+                visitor_id VARCHAR(64) NOT NULL,
+                visitor_name VARCHAR(255),
+                id_num VARCHAR(64),
+                visited_name VARCHAR(255),
+                arrival_time INTEGER,
+                leave_time INTEGER NOT NULL,
+                logged_at VARCHAR(64),
+                forwarded BOOLEAN NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            INSERT INTO visitor_leave_events
+                (visitor_id, leave_time, forwarded, payload_json)
+            VALUES ('1842', 1000000, 0, ?)
+            """,
+            (payload,),
+        )
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    monkeypatch.setattr(store, "engine", engine)
+    monkeypatch.setattr(store, "SessionLocal", Session)
+
+    store.init_visit_leave_db()
+    store.record_forward_result(
+        "1842",
+        1000000,
+        sent=False,
+        error="HTTP 500: down",
+        status_code=500,
+    )
+
+    with Session() as session:
+        row = session.query(VisitorLeaveEvent).one()
+        assert row.forward_attempts == 1
+        assert row.last_error == "HTTP 500: down"
+        assert row.last_status_code == 500
+        assert row.forwarded is False
+        assert row.payload_json == payload
+
+    store.record_forward_result("1842", 1000000, sent=True, status_code=200)
+
+    with Session() as session:
+        row = session.query(VisitorLeaveEvent).one()
+        assert row.forwarded is True
+        assert row.last_error == "HTTP 500: down"
+        assert row.forward_attempts == 1
+        assert row.payload_json == payload
+
+
 def test_import_logs_once_when_table_empty(tmp_path, monkeypatch) -> None:
     Session = _bind_tmp_db(tmp_path, monkeypatch)
     log_dir = tmp_path / "log"

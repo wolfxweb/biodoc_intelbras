@@ -2,12 +2,14 @@ import httpx
 import pytest
 from sqlalchemy.orm import Session
 
+from src.services.visitor_leave import ForwardResult
+
 from src.models.visitor_leave import (
     WEBHOOK_TOKEN_SETTING_KEY,
     WEBHOOK_URL_SETTING_KEY,
     VisitorLeaveEvent,
 )
-from src.services.visitor_leave_store import get_setting
+from src.services.visitor_leave_store import get_setting, set_webhook_url
 
 
 async def _login(client: httpx.AsyncClient, password: str = "admin-token") -> httpx.Response:
@@ -113,6 +115,134 @@ async def test_list_filters_by_name_and_setor(
     by_setor = await api_client.get("/", params={"setor": "EVB"})
     assert "Bruno Lima" in by_setor.text
     assert "Ana Souza" not in by_setor.text
+
+
+@pytest.mark.asyncio
+async def test_list_filters_unsent(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+) -> None:
+    _insert_event(
+        db_session,
+        visitor_id="1",
+        visitor_name="Pendente Silva",
+        leave_time=1_000_100,
+        forwarded=False,
+    )
+    _insert_event(
+        db_session,
+        visitor_id="2",
+        visitor_name="Jafoi Lima",
+        leave_time=1_000_200,
+        forwarded=True,
+    )
+    await _login(api_client)
+
+    page = await api_client.get("/", params={"sent": "no"})
+    assert "Pendente Silva" in page.text
+    assert "Jafoi Lima" not in page.text
+    assert "Tentativas" in page.text
+    assert "Não enviados" in page.text
+    assert "<th>Último erro</th>" not in page.text
+    assert 'class="badge badge-pending">Não enviado</span>' in page.text
+
+
+@pytest.mark.asyncio
+async def test_modal_hides_raw_timeout_chain(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+) -> None:
+    row = _insert_event(db_session, visitor_name="Timeout Silva", forwarded=False)
+    row.forward_attempts = 1
+    row.last_error = (
+        "ConnectTimeout | TimeoutError | CancelledError: "
+        "Cancelled via cancel scope 7fabef0a7e30; reason: deadline exceeded"
+    )
+    db_session.commit()
+    await _login(api_client)
+
+    page = await api_client.get("/")
+    assert "Tempo esgotado ao conectar no destino" in page.text
+    assert "cancel scope" not in page.text
+    assert "<th>Último erro</th>" not in page.text
+    assert "<dt>Último erro</dt>" in page.text
+    assert 'class="badge badge-pending">Não enviado</span>' in page.text
+    assert 'id="meta-attempts"' in page.text
+    assert "Payload" in page.text
+
+
+@pytest.mark.asyncio
+async def test_resend_selected_and_all_unsent(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_resend(**kwargs):
+        calls.append(kwargs["payload_json"])
+        return ForwardResult(sent=True, attempted=True, status_code=200)
+
+    monkeypatch.setattr(
+        "src.api.routes.visit_leave_ui.resend_stored_leave",
+        fake_resend,
+    )
+    pending = _insert_event(
+        db_session,
+        visitor_id="1",
+        visitor_name="Pendente",
+        leave_time=1_000_100,
+        forwarded=False,
+    )
+    other = _insert_event(
+        db_session,
+        visitor_id="3",
+        visitor_name="Outro",
+        leave_time=1_000_300,
+        forwarded=False,
+    )
+    sent = _insert_event(
+        db_session,
+        visitor_id="2",
+        visitor_name="Enviado",
+        leave_time=1_000_200,
+        forwarded=True,
+    )
+    pending.payload_json = '{"event":"visitor_leave","visitorId":"1"}'
+    other.payload_json = '{"event":"visitor_leave","visitorId":"3"}'
+    sent.payload_json = '{"event":"visitor_leave","visitorId":"2"}'
+    db_session.commit()
+    set_webhook_url("https://example.test/hook", db=db_session)
+
+    denied = await api_client.post(
+        "/visit-leave/resend",
+        data={"scope": "selected", "ids": str(pending.id)},
+        follow_redirects=False,
+    )
+    assert denied.status_code == 303
+    assert denied.headers["location"] == "/login"
+
+    await _login(api_client)
+    one = await api_client.post(
+        "/visit-leave/resend",
+        data={"scope": "selected", "ids": str(pending.id)},
+        follow_redirects=True,
+    )
+    assert one.status_code == 200
+    assert calls == ['{"event":"visitor_leave","visitorId":"1"}']
+    assert "1 enviado(s), 0 falha(s)" in one.text
+
+    calls.clear()
+    everyone = await api_client.post(
+        "/visit-leave/resend",
+        data={"scope": "unsent"},
+        follow_redirects=True,
+    )
+    assert everyone.status_code == 200
+    assert sorted(calls) == [
+        '{"event":"visitor_leave","visitorId":"1"}',
+        '{"event":"visitor_leave","visitorId":"3"}',
+    ]
 
 
 @pytest.mark.asyncio

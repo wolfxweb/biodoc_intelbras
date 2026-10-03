@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -29,8 +30,71 @@ except Exception:  # pragma: no cover
     _LOCAL_TZ = timezone.utc
 
 
+_FORWARD_COLUMNS = (
+    ("forward_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_error", "TEXT"),
+    ("last_status_code", "INTEGER"),
+    ("last_attempt_at", "VARCHAR(64)"),
+)
+_ERROR_MAX_LEN = 500
+
+
+@dataclass(frozen=True)
+class PendingLeave:
+    visitor_id: str
+    leave_time: int
+    payload_json: str
+    logged_at: str | None
+
+
 def init_visit_leave_db() -> None:
     Base.metadata.create_all(bind=engine)
+    _ensure_forward_columns()
+
+
+def _ensure_forward_columns() -> None:
+    with engine.begin() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(visitor_leave_events)").fetchall()
+        if not rows:
+            return
+        existing = {row[1] for row in rows}
+        for name, ddl in _FORWARD_COLUMNS:
+            if name not in existing:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE visitor_leave_events ADD COLUMN {name} {ddl}"
+                )
+
+
+def _clock() -> datetime:
+    return datetime.now(_LOCAL_TZ)
+
+
+def _parse_logged_at(value: str | None) -> datetime | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=_LOCAL_TZ)
+    return parsed
+
+
+def within_retry_window(
+    logged_at: str | None,
+    *,
+    window_hours: float,
+    now: datetime | None = None,
+) -> bool:
+    if window_hours <= 0:
+        return True
+    started = _parse_logged_at(logged_at)
+    if started is None:
+        return True
+    current = now or _clock()
+    return current - started <= timedelta(hours=window_hours)
 
 
 def _as_int(value: Any) -> int | None:
@@ -144,6 +208,84 @@ def get_webhook_token(env_fallback: str = "", *, db: Session | None = None) -> s
 
 def set_webhook_token(token: str, *, db: Session | None = None) -> None:
     set_setting(WEBHOOK_TOKEN_SETTING_KEY, token.strip(), db=db)
+
+
+def record_forward_result(
+    visitor_id: str,
+    leave_time: int,
+    *,
+    sent: bool,
+    error: str | None = None,
+    status_code: int | None = None,
+    db: Session | None = None,
+) -> None:
+    """Atualiza o resultado do POST sem alterar o payload original."""
+    owns_session = db is None
+    session = SessionLocal() if owns_session else db
+    assert session is not None
+    try:
+        row = (
+            session.query(VisitorLeaveEvent)
+            .filter(
+                VisitorLeaveEvent.visitor_id == visitor_id,
+                VisitorLeaveEvent.leave_time == leave_time,
+            )
+            .first()
+        )
+        if row is None:
+            return
+        row.last_attempt_at = _clock().isoformat(timespec="seconds")
+        if sent:
+            row.forwarded = True
+            row.last_status_code = status_code
+        else:
+            row.forwarded = False
+            row.forward_attempts = int(row.forward_attempts or 0) + 1
+            text = (error or "falha sem detalhe").strip()
+            row.last_error = text[:_ERROR_MAX_LEN]
+            row.last_status_code = status_code
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("[VISIT_LEAVE] falha ao gravar resultado do envio")
+    finally:
+        if owns_session:
+            session.close()
+
+
+def list_pending_leaves(
+    *,
+    limit: int,
+    window_hours: float,
+    now: datetime | None = None,
+) -> list[PendingLeave]:
+    """Baixas não enviadas, mais antigas primeiro, dentro da janela de reenvio."""
+    current = now or _clock()
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(VisitorLeaveEvent)
+            .filter(VisitorLeaveEvent.forwarded.is_(False))
+            .order_by(VisitorLeaveEvent.leave_time.asc())
+            .all()
+        )
+        pending: list[PendingLeave] = []
+        for row in rows:
+            if not within_retry_window(row.logged_at, window_hours=window_hours, now=current):
+                continue
+            pending.append(
+                PendingLeave(
+                    visitor_id=row.visitor_id,
+                    leave_time=row.leave_time,
+                    payload_json=row.payload_json,
+                    logged_at=row.logged_at,
+                )
+            )
+            if len(pending) >= limit:
+                break
+        return pending
+    finally:
+        session.close()
 
 
 def import_visitor_leave_logs_if_empty(*, log_dir: str | Path | None = None) -> int:

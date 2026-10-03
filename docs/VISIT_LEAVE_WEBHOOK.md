@@ -1,6 +1,6 @@
 # Webhook opcional de baixa de visita
 
-O middleware BioDoc-Intelbras detecta visita finalizada (`status=2`). Grava `log/visitor_leave.log`, persiste na tela `GET /` e, **se** `VISIT_LEAVE_WEBHOOK_URL` estiver preenchida, faz **um POST por registro novo** para um destino de terceiros.
+O middleware BioDoc-Intelbras detecta visita finalizada (`status=2`). Grava `log/visitor_leave.log`, persiste na tela `GET /` e, **se** `VISIT_LEAVE_WEBHOOK_URL` estiver preenchida, faz **um POST por registro novo** para um destino de terceiros. Falhas ficam na tela para reenvio manual ou automático, sempre com o mesmo JSON.
 
 Não há app receptor neste servidor. URL vazia = só log local + tela.
 
@@ -25,6 +25,8 @@ No `.env` do `middleware-biodoc`:
 VISIT_LEAVE_WEBHOOK_URL=
 # VISIT_LEAVE_WEBHOOK_TOKEN=
 VISIT_LEAVE_POLL_SECONDS=60
+VISIT_LEAVE_RETRY_SECONDS=600
+VISIT_LEAVE_RETRY_WINDOW_HOURS=6
 VISIT_LEAVE_UI_TOKEN=troque-por-um-token-da-tela
 ```
 
@@ -51,9 +53,11 @@ Authorization: Bearer {VISIT_LEAVE_WEBHOOK_TOKEN}
 | Método | `POST` |
 | Body | JSON de **uma** baixa (não é lote) |
 | Timeout do cliente | 10 segundos |
-| Retry | rede ou HTTP `429`, `500`, `502`, `503`, `504` (espera 1s e 3s) |
+| Retry curto | rede ou HTTP `429`, `500`, `502`, `503`, `504` (espera 1s e 3s), conta como uma tentativa |
+| Reenvio automático | a cada `VISIT_LEAVE_RETRY_SECONDS` (padrão 600), por `VISIT_LEAVE_RETRY_WINDOW_HOURS` (padrão 6) desde `loggedAt` |
+| Reenvio manual | na tela: um, vários selecionados ou todos os não enviados do filtro |
 | Sucesso | qualquer HTTP `2xx` |
-| Sem retry | `401`, `404`, `422`, etc. |
+| Sem retry curto | `401`, `404`, `422`, etc. A tela ainda pode reenviar o mesmo JSON |
 
 O destino deve responder **200 rápido**.
 

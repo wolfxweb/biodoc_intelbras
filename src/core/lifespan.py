@@ -15,6 +15,7 @@ from src.services.defense_ia_client import (
 from src.services.visitor_leave import (
     VisitLeaveSettings,
     visitor_leave_poll_loop,
+    visitor_leave_retry_loop,
 )
 from src.services.visitor_leave_store import (
     get_webhook_token,
@@ -65,12 +66,18 @@ def build_defense_client_from_env() -> DefenseIAClient:
 def build_visit_leave_settings_from_env() -> VisitLeaveSettings:
     poll_raw = os.getenv("VISIT_LEAVE_POLL_SECONDS", "60").strip()
     poll_interval = float(poll_raw) if poll_raw else 0.0
+    retry_raw = os.getenv("VISIT_LEAVE_RETRY_SECONDS", "600").strip()
+    retry_interval = float(retry_raw) if retry_raw else 0.0
+    window_raw = os.getenv("VISIT_LEAVE_RETRY_WINDOW_HOURS", "6").strip()
+    retry_window = float(window_raw) if window_raw else 6.0
     return VisitLeaveSettings(
         webhook_url=os.getenv("VISIT_LEAVE_WEBHOOK_URL", "").strip(),
         webhook_token=os.getenv("VISIT_LEAVE_WEBHOOK_TOKEN", "").strip(),
         timeout_seconds=float(os.getenv("DEFENSE_IA_TIMEOUT_SECONDS", "10")),
         poll_interval_seconds=poll_interval,
         state_path=os.getenv("VISIT_LEAVE_STATE_PATH", "data/visitor_leave_state.json"),
+        retry_interval_seconds=retry_interval,
+        retry_window_hours=retry_window,
     )
 
 
@@ -117,18 +124,31 @@ async def lifespan(app: FastAPI):
     )
     leave_settings = app.state.visit_leave_settings
     logger.info(
-        "Visit leave: source=history webhook=%s poll=%ss",
+        "Visit leave: source=history webhook=%s poll=%ss retry=%ss window=%sh",
         "on" if bool(get_webhook_url(leave_settings.webhook_url)) else "log-only",
         int(leave_settings.poll_interval_seconds) if leave_settings.poll_enabled else 0,
+        int(leave_settings.retry_interval_seconds) if leave_settings.retry_enabled else 0,
+        leave_settings.retry_window_hours,
     )
+    background_tasks: list[asyncio.Task] = []
     if app.state.defense_client.settings.enabled and leave_settings.poll_enabled:
-        asyncio.create_task(
-            visitor_leave_poll_loop(app.state.defense_client, leave_settings)
+        background_tasks.append(
+            asyncio.create_task(
+                visitor_leave_poll_loop(app.state.defense_client, leave_settings)
+            )
+        )
+    if leave_settings.retry_enabled:
+        background_tasks.append(
+            asyncio.create_task(visitor_leave_retry_loop(leave_settings))
         )
 
     try:
         yield
     finally:
+        for task in background_tasks:
+            task.cancel()
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         await app.state.biodoc_client.close()
         await app.state.defense_client.close()
         logger.info("Stopping BIODOC-Intelbras Middleware API")
