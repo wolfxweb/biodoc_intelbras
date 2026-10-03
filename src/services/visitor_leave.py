@@ -61,6 +61,7 @@ class VisitLeaveSettings:
     state_path: str = "data/visitor_leave_state.json"
     retry_interval_seconds: float = 600.0
     retry_window_hours: float = 6.0
+    retry_max_attempts: int = 6
 
     @property
     def forward_enabled(self) -> bool:
@@ -573,6 +574,7 @@ async def retry_unsent_visitor_leaves(settings: VisitLeaveSettings) -> dict[str,
         pending = list_pending_leaves(
             limit=RETRY_BATCH_LIMIT,
             window_hours=settings.retry_window_hours,
+            max_attempts=settings.retry_max_attempts,
         )
         if not pending:
             return {"status": "ok", "sent": 0, "failed": 0, "skipped": 0}
@@ -608,9 +610,10 @@ async def visitor_leave_retry_loop(settings: VisitLeaveSettings) -> None:
         logger.info("[VISIT_LEAVE] reenvio automático desligado (VISIT_LEAVE_RETRY_SECONDS=0)")
         return
     logger.info(
-        "[VISIT_LEAVE] reenvio automático interval=%ss window=%sh",
+        "[VISIT_LEAVE] reenvio automático interval=%ss window=%sh max=%s",
         int(settings.retry_interval_seconds),
         settings.retry_window_hours,
+        settings.retry_max_attempts,
     )
     while True:
         try:

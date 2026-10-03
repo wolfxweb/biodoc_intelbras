@@ -27,6 +27,7 @@ VISIT_LEAVE_WEBHOOK_URL=
 VISIT_LEAVE_POLL_SECONDS=60
 VISIT_LEAVE_RETRY_SECONDS=600
 VISIT_LEAVE_RETRY_WINDOW_HOURS=6
+VISIT_LEAVE_RETRY_MAX_ATTEMPTS=6
 VISIT_LEAVE_UI_TOKEN=troque-por-um-token-da-tela
 ```
 
@@ -54,8 +55,8 @@ Authorization: Bearer {VISIT_LEAVE_WEBHOOK_TOKEN}
 | Body | JSON de **uma** baixa (não é lote) |
 | Timeout do cliente | 10 segundos |
 | Retry curto | rede ou HTTP `429`, `500`, `502`, `503`, `504` (espera 1s e 3s), conta como uma tentativa |
-| Reenvio automático | a cada `VISIT_LEAVE_RETRY_SECONDS` (padrão 600), por `VISIT_LEAVE_RETRY_WINDOW_HOURS` (padrão 6) desde `loggedAt` |
-| Reenvio manual | na tela: um, vários selecionados ou todos os não enviados do filtro |
+| Reenvio automático | a cada `VISIT_LEAVE_RETRY_SECONDS` (padrão 600), por `VISIT_LEAVE_RETRY_WINDOW_HOURS` (padrão 6) desde `loggedAt`, no máximo `VISIT_LEAVE_RETRY_MAX_ATTEMPTS` falhas (padrão 6; 0 sem teto) |
+| Reenvio manual | na tela: um, vários selecionados ou todos os não enviados do filtro, sem prazo e sem teto de tentativas |
 | Sucesso | qualquer HTTP `2xx` |
 | Sem retry curto | `401`, `404`, `422`, etc. A tela ainda pode reenviar o mesmo JSON |
 

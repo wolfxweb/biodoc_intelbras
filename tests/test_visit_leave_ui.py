@@ -141,10 +141,40 @@ async def test_list_filters_unsent(
     page = await api_client.get("/", params={"sent": "no"})
     assert "Pendente Silva" in page.text
     assert "Jafoi Lima" not in page.text
-    assert "Tentativas" in page.text
+    assert "Reenvios" in page.text
     assert "Não enviados" in page.text
+    assert "Com reenvio" in page.text
     assert "<th>Último erro</th>" not in page.text
     assert 'class="badge badge-pending">Não enviado</span>' in page.text
+
+
+@pytest.mark.asyncio
+async def test_list_filters_rows_with_resend(
+    api_client: httpx.AsyncClient,
+    db_session: Session,
+) -> None:
+    retried = _insert_event(
+        db_session,
+        visitor_id="1",
+        visitor_name="Retentou Silva",
+        leave_time=1_000_100,
+        forwarded=True,
+    )
+    retried.forward_attempts = 2
+    _insert_event(
+        db_session,
+        visitor_id="2",
+        visitor_name="Zerou Lima",
+        leave_time=1_000_200,
+        forwarded=False,
+    )
+    db_session.commit()
+    await _login(api_client)
+
+    page = await api_client.get("/", params={"sent": "retry"})
+    assert "Retentou Silva" in page.text
+    assert "Zerou Lima" not in page.text
+    assert 'value="retry" selected' in page.text
 
 
 @pytest.mark.asyncio
@@ -162,12 +192,13 @@ async def test_modal_hides_raw_timeout_chain(
     await _login(api_client)
 
     page = await api_client.get("/")
-    assert "Tempo esgotado ao conectar no destino" in page.text
+    assert "Tempo esgotado ao conectar no destino" not in page.text
     assert "cancel scope" not in page.text
-    assert "<th>Último erro</th>" not in page.text
-    assert "<dt>Último erro</dt>" in page.text
+    assert "Último erro" not in page.text
+    assert "Sem resposta" not in page.text
     assert 'class="badge badge-pending">Não enviado</span>' in page.text
     assert 'id="meta-attempts"' in page.text
+    assert ">Reenvios</span>" in page.text
     assert "Payload" in page.text
 
 

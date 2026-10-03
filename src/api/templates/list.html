@@ -47,24 +47,18 @@
     tbody tr:hover { background: #f3fbf6; }
     .pager { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
     dialog { border: 0; border-radius: 12px; padding: 0; max-width: 760px; width: calc(100% - 32px); }
-    .attempt-grid {
-      display: grid; grid-template-columns: 140px 180px 1fr; gap: 12px;
-      margin: 0; padding: 16px; background: #f7fbf8;
+    .attempt-line {
+      margin: 0; padding: 14px 16px; background: #f7fbf8;
+      font-size: .92rem;
     }
-    .attempt-grid div { min-width: 0; }
-    .attempt-grid dt {
-      margin: 0 0 4px; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: #888;
+    .attempt-line span {
+      display: block; margin-bottom: 4px; font-size: .72rem; text-transform: uppercase;
+      letter-spacing: .04em; color: #888;
     }
-    .attempt-grid dd { margin: 0; font-weight: 650; }
-    .attempt-error dd {
-      font-weight: 500; background: #fff; border: 1px solid #eadfdf; border-radius: 8px; padding: 8px 10px;
-    }
+    .attempt-line strong { font-weight: 650; }
     .json-label {
       margin: 0; padding: 12px 16px 0; font-size: .72rem; text-transform: uppercase;
       letter-spacing: .04em; color: #888;
-    }
-    @media (max-width: 700px) {
-      .attempt-grid { grid-template-columns: 1fr; }
     }
     dialog::backdrop { background: rgba(0,0,0,.35); }
     pre { margin: 0; padding: 16px; overflow: auto; font-size: .8rem; background: #111; color: #e8e8e8; border-radius: 0 0 12px 12px; }
@@ -123,6 +117,7 @@
             <option value="" {% if not sent %}selected{% endif %}>Todos</option>
             <option value="no" {% if sent == "no" %}selected{% endif %}>Não enviados</option>
             <option value="yes" {% if sent == "yes" %}selected{% endif %}>Enviados</option>
+            <option value="retry" {% if sent == "retry" %}selected{% endif %}>Com reenvio</option>
           </select>
         </div>
         <div class="col-2 filter-actions">
@@ -152,7 +147,7 @@
             <th>Setor</th>
             <th>Chegada</th>
             <th>Enviado para URL destino</th>
-            <th>Tentativas</th>
+            <th>Reenvios</th>
           </tr>
         </thead>
         <tbody>
@@ -160,8 +155,6 @@
           <tr
             data-json="{{ row.payload_json | e }}"
             data-attempts="{{ row.forward_attempts or 0 }}"
-            data-error="{{ row.last_error | forward_error }}"
-            data-status="{{ row.last_status_code or '' }}"
           >
             <td><input type="checkbox" name="ids" value="{{ row.id }}" aria-label="Selecionar {{ row.visitor_name or row.visitor_id }}"></td>
             <td>{{ row.leave_time | unix_sp }}</td>
@@ -200,20 +193,7 @@
       <strong>JSON da baixa</strong>
       <form method="dialog"><button class="secondary" type="submit">Fechar</button></form>
     </div>
-    <dl class="attempt-grid">
-      <div>
-        <dt>Tentativas</dt>
-        <dd id="meta-attempts">0</dd>
-      </div>
-      <div>
-        <dt>Resposta</dt>
-        <dd id="meta-http">Sem resposta</dd>
-      </div>
-      <div class="attempt-error">
-        <dt>Último erro</dt>
-        <dd id="meta-error">Nenhum</dd>
-      </div>
-    </dl>
+    <p class="attempt-line"><span>Reenvios</span><strong id="meta-attempts">0</strong></p>
     <p class="json-label">Payload</p>
     <pre id="json-body"></pre>
   </dialog>
@@ -221,14 +201,10 @@
     const modal = document.getElementById("json-modal");
     const body = document.getElementById("json-body");
     const metaAttempts = document.getElementById("meta-attempts");
-    const metaHttp = document.getElementById("meta-http");
-    const metaError = document.getElementById("meta-error");
     document.querySelectorAll("tbody tr[data-json]").forEach((row) => {
       row.addEventListener("click", (event) => {
         if (event.target.closest("input, button, a, label")) return;
         metaAttempts.textContent = row.dataset.attempts || "0";
-        metaHttp.textContent = row.dataset.status ? "HTTP " + row.dataset.status : "Sem resposta";
-        metaError.textContent = row.dataset.error || "Nenhum";
         try {
           body.textContent = JSON.stringify(JSON.parse(row.dataset.json), null, 2);
         } catch (err) {

@@ -569,3 +569,60 @@ async def test_retry_skips_sent_and_rows_outside_window(tmp_path, monkeypatch) -
         assert recent.last_error == "HTTP 503: down"
         assert old.forward_attempts == 0
         assert '"loggedAt": "recent"' in recent.payload_json
+
+
+@pytest.mark.asyncio
+async def test_auto_retry_stops_at_max_attempts_and_manual_does_not(tmp_path, monkeypatch) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    store, Session = _bind_store(tmp_path, monkeypatch)
+    now = datetime(2026, 10, 3, 12, 0, tzinfo=ZoneInfo("America/Sao_Paulo"))
+    monkeypatch.setattr(store, "_clock", lambda: now)
+    from src.models.visitor_leave import VisitorLeaveEvent
+
+    payload = json.dumps(
+        {
+            "event": "visitor_leave",
+            "visitorId": "capped",
+            "leaveTime": "40",
+            "loggedAt": "capped",
+        }
+    )
+    with Session() as session:
+        session.add(
+            VisitorLeaveEvent(
+                visitor_id="capped",
+                leave_time=40,
+                logged_at="2026-10-03T11:00:00-03:00",
+                forwarded=False,
+                forward_attempts=6,
+                payload_json=payload,
+            )
+        )
+        session.commit()
+
+    captured: list[str] = []
+
+    async def fake_forward(body, settings):
+        captured.append(body["visitorId"])
+        return ForwardResult(sent=True, attempted=True, status_code=200)
+
+    monkeypatch.setattr(visitor_leave_module, "forward_visitor_leave", fake_forward)
+    settings = VisitLeaveSettings(
+        webhook_url="https://example.test/hook",
+        retry_window_hours=6,
+        retry_max_attempts=6,
+    )
+    summary = await retry_unsent_visitor_leaves(settings)
+    assert summary["sent"] == 0
+    assert captured == []
+
+    result = await resend_stored_leave(
+        visitor_id="capped",
+        leave_time=40,
+        payload_json=payload,
+        settings=settings,
+    )
+    assert result.sent is True
+    assert captured == ["capped"]

@@ -21,7 +21,7 @@ from src.api.manuals import get_manual, list_manuals, render_manual
 from src.core.database import get_db
 from src.core.lifespan import build_visit_leave_settings_from_env
 from src.models.visitor_leave import VisitorLeaveEvent
-from src.services.visitor_leave import format_stored_forward_error, resend_stored_leave
+from src.services.visitor_leave import resend_stored_leave
 from src.services.visitor_leave_store import (
     format_unix,
     get_webhook_token,
@@ -33,7 +33,6 @@ from src.services.visitor_leave_store import (
 router = APIRouter(include_in_schema=False)
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 templates.env.filters["unix_sp"] = format_unix
-templates.env.filters["forward_error"] = format_stored_forward_error
 
 COOKIE_NAME = "visit_leave_ui"
 COOKIE_MAX_AGE = 12 * 3600
@@ -111,6 +110,8 @@ def _filtered_leave_query(
         query = query.filter(VisitorLeaveEvent.forwarded.is_(False))
     elif sent == "yes":
         query = query.filter(VisitorLeaveEvent.forwarded.is_(True))
+    elif sent == "retry":
+        query = query.filter(VisitorLeaveEvent.forward_attempts > 0)
     return query
 
 
@@ -192,7 +193,7 @@ async def visit_leave_list(
     if not _is_authenticated(request):
         return RedirectResponse("/login", status_code=303)
 
-    if sent not in {"", "no", "yes"}:
+    if sent not in {"", "no", "yes", "retry"}:
         sent = ""
     page = max(page, 1)
     page_size = 50
@@ -262,7 +263,7 @@ async def resend_visit_leaves(
     date_from = str(form.get("from") or "")
     date_to = str(form.get("to") or "")
     sent = str(form.get("sent") or "")
-    if sent not in {"", "no", "yes"}:
+    if sent not in {"", "no", "yes", "retry"}:
         sent = ""
 
     notice = ""

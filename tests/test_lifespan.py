@@ -74,3 +74,4 @@ def test_visit_leave_settings_use_history_polling_defaults(monkeypatch):
     assert settings.forward_enabled is False
     assert settings.retry_interval_seconds == 600
     assert settings.retry_window_hours == 6
+    assert settings.retry_max_attempts == 6

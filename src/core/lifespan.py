@@ -70,6 +70,10 @@ def build_visit_leave_settings_from_env() -> VisitLeaveSettings:
     retry_interval = float(retry_raw) if retry_raw else 0.0
     window_raw = os.getenv("VISIT_LEAVE_RETRY_WINDOW_HOURS", "6").strip()
     retry_window = float(window_raw) if window_raw else 6.0
+    max_raw = os.getenv("VISIT_LEAVE_RETRY_MAX_ATTEMPTS", "6").strip()
+    retry_max = int(float(max_raw)) if max_raw else 6
+    if retry_max < 0:
+        retry_max = 0
     return VisitLeaveSettings(
         webhook_url=os.getenv("VISIT_LEAVE_WEBHOOK_URL", "").strip(),
         webhook_token=os.getenv("VISIT_LEAVE_WEBHOOK_TOKEN", "").strip(),
@@ -78,6 +82,7 @@ def build_visit_leave_settings_from_env() -> VisitLeaveSettings:
         state_path=os.getenv("VISIT_LEAVE_STATE_PATH", "data/visitor_leave_state.json"),
         retry_interval_seconds=retry_interval,
         retry_window_hours=retry_window,
+        retry_max_attempts=retry_max,
     )
 
 
@@ -124,11 +129,12 @@ async def lifespan(app: FastAPI):
     )
     leave_settings = app.state.visit_leave_settings
     logger.info(
-        "Visit leave: source=history webhook=%s poll=%ss retry=%ss window=%sh",
+        "Visit leave: source=history webhook=%s poll=%ss retry=%ss window=%sh max=%s",
         "on" if bool(get_webhook_url(leave_settings.webhook_url)) else "log-only",
         int(leave_settings.poll_interval_seconds) if leave_settings.poll_enabled else 0,
         int(leave_settings.retry_interval_seconds) if leave_settings.retry_enabled else 0,
         leave_settings.retry_window_hours,
+        leave_settings.retry_max_attempts,
     )
     background_tasks: list[asyncio.Task] = []
     if app.state.defense_client.settings.enabled and leave_settings.poll_enabled:

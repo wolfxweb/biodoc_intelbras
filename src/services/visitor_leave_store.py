@@ -257,9 +257,10 @@ def list_pending_leaves(
     *,
     limit: int,
     window_hours: float,
+    max_attempts: int = 0,
     now: datetime | None = None,
 ) -> list[PendingLeave]:
-    """Baixas não enviadas, mais antigas primeiro, dentro da janela de reenvio."""
+    """Baixas não enviadas, mais antigas primeiro, dentro da janela e do teto."""
     current = now or _clock()
     session = SessionLocal()
     try:
@@ -272,6 +273,8 @@ def list_pending_leaves(
         pending: list[PendingLeave] = []
         for row in rows:
             if not within_retry_window(row.logged_at, window_hours=window_hours, now=current):
+                continue
+            if max_attempts > 0 and int(row.forward_attempts or 0) >= max_attempts:
                 continue
             pending.append(
                 PendingLeave(
